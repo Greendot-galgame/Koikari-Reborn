@@ -1,0 +1,14 @@
+/target/
+/.build-tools/
+/build/
+*.xp3
+*.exe
+*.dll
+*.app/
+*.dSYM/
+.DS_Store
+xcuserdata/
+*.xcuserstate
+/local-assets/
+*.ks
+*.tjs
