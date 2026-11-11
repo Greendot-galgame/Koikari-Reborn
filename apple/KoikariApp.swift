@@ -37,6 +37,7 @@ struct Snapshot: Decodable {
   var warnings: [String]
   var history: [String]
   var interlude: Interlude?
+  var archives: [String]?
 }
 struct Interlude: Decodable {
   var background: String
@@ -595,7 +596,7 @@ struct Content: View {
               }
               Button(game.handle == nil ? "导入 XP3 所在文件夹" : "更换资源文件夹") { importing = true }
                 .accessibilityIdentifier("import-assets")
-              Text("使用本地 data.xp3 / patch.xp3 · 不加载 Windows 程序或 Steam 插件")
+              Text("本地 data.xp3，可附加 adult.xp3 / patch*.xp3 · 不加载 Windows / Steam")
                 .font(.system(size: 10)).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
             .buttonStyle(.borderedProminent).tint(Color(red: 0.21, green: 0.35, blue: 0.48))
@@ -729,6 +730,7 @@ struct Content: View {
         "兼容状态 · 非完整重制",
         text: ([
           "本预览仅实现首个主剧情章节。全 TJS、分支选项、动画、转场、视频和后续章节尚未支持。", "Windows DLL / Steam API：未加载",
+          "已加载资源包（后者优先）：\(game.snapshot?.archives?.joined(separator: " → ") ?? "无")",
           "存档保存剧情位置、画面、回看和音频资源标识；读档重播当前语音，不恢复采样级播放位置。", game.snapshot?.blocked ?? "",
         ] + (game.snapshot?.warnings ?? [])).filter { !$0.isEmpty }.joined(separator: "\n\n"),
         close: { showDiagnostics = false })

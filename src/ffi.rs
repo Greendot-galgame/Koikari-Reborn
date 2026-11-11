@@ -94,8 +94,10 @@ pub unsafe extern "C" fn kr_string_free(value: *mut c_char) {
 pub unsafe extern "C" fn kr_snapshot(handle: *mut Host) -> *mut c_char {
     run(|| {
         let h = host(handle)?;
+        let mut snapshot = serde_json::to_value(&h.engine.state).map_err(|e| e.to_string())?;
+        snapshot["archives"] = serde_json::json!(h.engine.assets.archive_names());
         Ok(cstring(
-            serde_json::to_string(&h.engine.state).map_err(|e| e.to_string())?,
+            serde_json::to_string(&snapshot).map_err(|e| e.to_string())?,
         ))
     })
 }

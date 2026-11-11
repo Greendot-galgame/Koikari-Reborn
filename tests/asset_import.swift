@@ -36,6 +36,38 @@ import Foundation
       preconditionFailure("Invalid optional patch must be rejected")
     } catch AssetImport.Failure.invalid(_) {}
     precondition(!manager.fileExists(atPath: cancelled.path))
+    try data.write(to: source.appendingPathComponent("patch.xp3"))
+    for name in ["adult.xp3", "patch2.xp3", "patch10.xp3", "patch50.xp3"] {
+      try data.write(to: source.appendingPathComponent(name))
+    }
+    try Data("do not import executables".utf8).write(to: source.appendingPathComponent("Setup.exe"))
+    let patched = root.appendingPathComponent("Patched")
+    var patchProgress: [(Int64, Int64)] = []
+    try AssetImport().copy(from: source, to: patched) { patchProgress.append(($0, $1)) }
+    for name in ["data.xp3", "adult.xp3", "patch.xp3", "patch2.xp3", "patch10.xp3", "patch50.xp3"] {
+      let imported = try Data(contentsOf: patched.appendingPathComponent(name))
+      precondition(imported == data)
+    }
+    precondition(patchProgress.last?.0 == Int64(data.count) * 6)
+    precondition(patchProgress.last?.1 == Int64(data.count) * 6)
+    precondition(!manager.fileExists(atPath: patched.appendingPathComponent("Setup.exe").path))
+    let midCopy = AssetImport()
+    do {
+      try midCopy.copy(from: source, to: cancelled) { copied, _ in
+        if copied > 0 { midCopy.cancel() }
+      }
+      preconditionFailure("Supplement copy cancellation must remove its partial destination")
+    } catch AssetImport.Failure.cancelled {}
+    precondition(!manager.fileExists(atPath: cancelled.path))
+    for name in ["adult.xp3", "patch50.xp3"] {
+      try Data("invalid archive".utf8).write(to: source.appendingPathComponent(name))
+      do {
+        try AssetImport().copy(from: source, to: cancelled) { _, _ in }
+        preconditionFailure("Invalid supplements must not be silently skipped")
+      } catch AssetImport.Failure.invalid(let failed) { precondition(failed == name) }
+      precondition(!manager.fileExists(atPath: cancelled.path))
+      try data.write(to: source.appendingPathComponent(name))
+    }
     do {
       try AssetImport.checkSpace(required: 100, available: 100)
       preconditionFailure("Space reserve must be enforced")
@@ -48,7 +80,7 @@ import Foundation
     precondition(!manager.fileExists(atPath: abandoned.path))
     precondition(manager.fileExists(atPath: source.path) && manager.fileExists(atPath: output.path))
     print(
-      "Asset import: copy, progress, cancellation, invalid patch, destination protection, abandoned cleanup and disk reserve passed"
+      "Asset import: base/supplement/numbered patches, total progress, mid-copy cancellation, invalid archives, executable exclusion, destination protection, cleanup and disk reserve passed"
     )
   }
 }

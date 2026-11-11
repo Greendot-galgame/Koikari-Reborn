@@ -1,4 +1,4 @@
-# Koikari Reborn 0.3 — 开场章节预览
+# Koikari Reborn 0.4 — 开场章节预览
 
 Rust 游戏核心 + Rust Metal 渲染，macOS / iPhone / iPad 共用代码。
 这是独立重实现，不启动原 EXE、不加载原 DLL、不集成 Steam，也不修改原游戏。
@@ -7,7 +7,7 @@ Rust 游戏核心 + Rust Metal 渲染，macOS / iPhone / iPad 共用代码。
 
 ## 资源
 
-需要自行准备有权使用的 `data.xp3`，可同时放入 `patch.xp3`。补丁包优先覆盖主包。
+需要自行准备有权使用的 `data.xp3`，可同时放入 `adult.xp3`、`patch.xp3` 和 `patch1.xp3` 至 `patch50.xp3`。同一路径的后加载资源覆盖前者：`data → adult → patch → patch1 → … → patch50`，数字按数值排序，不按文件名的字典序排序。
 资源不会随项目分发，源码内不包含原游戏的图片、音频、完整脚本或 Windows 程序。
 不支持加密/受保护 XP3，不提供解密或 DRM 绕过。
 
@@ -15,6 +15,16 @@ Rust 游戏核心 + Rust Metal 渲染，macOS / iPhone / iPad 共用代码。
 - iPhone/iPad：在「文件」中准备资源目录，再用应用的同名按钮选择目录。应用复制 XP3 到自己的 Application Support，不导入 DLL、EXE 或原版存档。导入先检查文件头和空间，预留资源大小加 64 MB；显示字节进度并可取消。新副本验证成功前保留原资源；失败或取消清理临时副本，启动时清理上次中断的导入暂存目录。导入期间保持前台。
 - iOS 的资源偏好只保存相对目录标识，升级安装改变沙盒根目录后仍可恢复；早期预览保存的旧容器绝对路径会迁移到当前 Application Support，不删除或重新复制原有资源与存档。
 - macOS 开发启动也支持 `open PATH/KoikariReborn.app --args --assets /path/to/assets`。
+
+### KG012Z4A0X0X-VER100 补丁
+
+将官方 ZIP 内的 `adult.xp3` 放入包含 `data.xp3` 的同级目录，再选择该目录；无需运行 `Setup.exe`，也不执行补丁 TJS 或安装 Steam。单独选择只有 `adult.xp3` 的目录不能替代主资源。源码与应用包不附带补丁或任何原版素材。
+
+- 该补丁中的两个空 `adult.tjs` 是合法的存在性标记；XP3 支持长度为零的空 segment 表，仍要求 info/segm/adlr 结构齐全和校验值正确。不把损坏文件或受保护条目当作空文件。
+- iPhone/iPad 导入会复制上述所有已识别资源包，进度与空间检查计入补丁；取消或失败不会替换当前资源。完整数据加该补丁约 4.9 GB，替换期间旧副本保留，需另有新副本所需空间及 64 MB 预留。EXE、DLL、PDF 和未知归档不会被导入。
+- 「更多 → 兼容状态」列出实际加载的资源包及覆盖顺序，避免把“文件已下载”误认为“运行时已读取”。
+- 加入/移除补丁会改变存档资源指纹。旧存档文件保留，但不会自动套用到不同脚本版本；切回原资源目录可继续旧档。没有新增归档时维持原有指纹算法。
+- 这里只扩充资源解析、覆盖与首章适配，**不等于全部新增剧情、分支、TJS 或视频已经可玩**。未知指令仍停止并报告位置。
 
 ## 构建
 
@@ -46,7 +56,7 @@ target/xcode-iphoneos/Build/Products/Debug-iphoneos/KoikariReborn.app
 
 也可打开 `apple/KoikariReborn.xcodeproj`，选择共享 scheme `KoikariReborn` 和目标设备。在 Xcode 的 Signing & Capabilities 中选择自己的 Team 后，才可安装到 iPhone/iPad 真机；脚本默认关闭签名，因此 iphoneos 构建结果**不能直接安装**。不附带开发者凭据、证书、描述文件或签名 IPA。
 
-macOS 本地构建可使用临时签名运行：
+构建脚本会对 macOS 与模拟器应用刷新临时签名并验签；iphoneos 仍未签名。需要手动刷新 macOS 本地签名时可使用：
 
 ```sh
 codesign --force --deep --sign - target/xcode-macosx/Build/Products/Debug/KoikariReborn.app
@@ -94,6 +104,9 @@ target/asset-import-tests
 
 # 不包含原版资源的合成 XP3 测试始终运行；真实资源测试须显式启用。
 KOIKARI_ASSETS=/path/to/assets cargo test --test real_assets -- --ignored --nocapture
+# 真实补丁测试：原资源与合并后的资源目录分开，避免改写原包。
+KOIKARI_ASSETS=/path/to/original KOIKARI_PATCH_ASSETS=/path/to/with-patch \
+  cargo test --test real_patch -- --ignored --nocapture --test-threads=1
 cargo run -- walk /path/to/assets
 ```
 
@@ -101,12 +114,14 @@ cargo run -- walk /path/to/assets
 
 CLI 还提供 `list`、`text`、`verify`。完整性失败时保留错误，不对原始资源做补丁或忽略校验。
 
-当前 `bgimage/OPmovie.mp4` 的一个 zlib segment 校验失败：尚未确认是源包、下载还是特殊封装问题，视频路径未接入。第三方 `metal 0.29` 依赖的 `block 0.1.6` 还会产生 Rust 的 future-incompatibility 警告；本项目的 Clippy 检查与该依赖的未来兼容性是两回事。
+原基础包中 `bgimage/OPmovie.mp4` 的一个 zlib segment 校验失败：尚未确认是源包、下载还是特殊封装问题，仍严格拒绝；补丁可覆盖同名资源，但视频播放路径仍未接入。第三方 `metal 0.29` 依赖的 `block 0.1.6` 还会产生 Rust 的 future-incompatibility 警告；本项目的 Clippy 检查与该依赖的未来兼容性是两回事。
 
 无界面测试、GPU shader 编译和三平台构建不能证明应用 UI、实际扬声器输出或真机生命周期正常；需要另外做 macOS、iPhone 模拟器、iPad 模拟器和真机实测。
 
 ### 本次验证结果
 
+- v0.4/build 6 补丁阶段：33 项基础、4 项真实补丁、8 项原资源/GPU 回归通过。补丁全部 4,554 项严格解压/校验、889 张图片解码成功；补丁首章至第 692 次停页，介绍位于 112/199/247，恢复后一致。三个 Release 目标构建、macOS/模拟器验签、Rust/Swift 检查通过。
+- v0.4 macOS 实际导入三包、诊断顺序、指定第 115 页画面、回溯，以及异包旧档拒绝/切回原包恢复已录屏。iPhone 实际 Files 导入显示 4.94 GB 并完成，但导入后的剧情及取消时序未测：本轮因完整游戏新需求中断，不作为全量游戏验收。原手动存档及 macOS 自动进度已核验/恢复。
 - v0.3 合成资源/单元回归：30 项通过，覆盖人物介绍、旧视觉存档重建、回溯边界及继续推进一致性。真实 XP3 / GPU 回归：8 项；另有 16 项 Swift 路径断言及 Swift 导入的复制、进度、取消、坏补丁、目标保护、暂存清理和空间检查回归。
 - 首章脚本运行到显式预览边界：690 次停页，未遇到未支持命令；包含 3 张人物介绍，最后一次停页为章节边界，不等同于 690 句对白。
 - 464 个不同图片成功解码；最大画面活动纹理像素约 150.4 MiB（不是应用总内存）。

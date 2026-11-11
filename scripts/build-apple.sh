@@ -9,4 +9,9 @@ xcodebuild -project "$ROOT/apple/KoikariReborn.xcodeproj" -scheme KoikariReborn 
   CODE_SIGNING_ALLOWED=NO build
 SUFFIX="-$PLATFORM"
 if [[ "$PLATFORM" == macosx ]]; then SUFFIX=""; fi
-echo "App: $ROOT/target/xcode-$PLATFORM/Build/Products/${CONFIGURATION:-Debug}$SUFFIX/KoikariReborn.app"
+APP="$ROOT/target/xcode-$PLATFORM/Build/Products/${CONFIGURATION:-Debug}$SUFFIX/KoikariReborn.app"
+if [[ "$PLATFORM" != iphoneos ]]; then
+  codesign --force --deep --sign - "$APP"
+  codesign --verify --deep --strict "$APP"
+fi
+echo "App: $APP"

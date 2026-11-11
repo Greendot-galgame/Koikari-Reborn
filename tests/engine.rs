@@ -40,6 +40,96 @@ fn patch_overrides_main() {
     );
 }
 #[test]
+fn supplemental_and_numbered_patches_follow_numeric_priority_and_change_fingerprint() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(
+        d.path().join("data.xp3"),
+        common::archive(&[("same.txt", b"base")], true, true, 0, false),
+    )
+    .unwrap();
+    let baseline = Store::open(d.path()).unwrap().fingerprint;
+    for (name, value) in [
+        ("adult.xp3", b"supplement".as_slice()),
+        ("patch.xp3", b"patch"),
+        ("patch2.xp3", b"two"),
+        ("patch10.xp3", b"ten"),
+        ("patch50.xp3", b"fifty"),
+    ] {
+        std::fs::write(
+            d.path().join(name),
+            common::archive(&[("same.txt", value)], true, true, 0, false),
+        )
+        .unwrap();
+        assert_eq!(
+            Store::open(d.path()).unwrap().bytes("same.txt").unwrap(),
+            value
+        );
+    }
+    let store = Store::open(d.path()).unwrap();
+    assert_eq!(
+        store.archive_names(),
+        [
+            "data.xp3",
+            "adult.xp3",
+            "patch.xp3",
+            "patch2.xp3",
+            "patch10.xp3",
+            "patch50.xp3"
+        ]
+    );
+    assert_ne!(store.fingerprint, baseline);
+    std::fs::remove_file(d.path().join("adult.xp3")).unwrap();
+    assert_ne!(
+        Store::open(d.path()).unwrap().fingerprint,
+        store.fingerprint
+    );
+    for name in ["patch.xp3", "patch2.xp3", "patch10.xp3", "patch50.xp3"] {
+        std::fs::remove_file(d.path().join(name)).unwrap();
+    }
+    assert_eq!(Store::open(d.path()).unwrap().fingerprint, baseline);
+}
+#[test]
+fn empty_entries_require_a_segment_table_and_valid_checksum() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("data.xp3");
+    let bytes = common::archive(&[("marker.tjs", b"")], false, false, 0, false);
+    std::fs::write(&path, &bytes).unwrap();
+    assert_eq!(
+        Store::open(d.path()).unwrap().text("marker.tjs").unwrap(),
+        ""
+    );
+    let mut missing_table = bytes.clone();
+    let at = missing_table.windows(4).position(|v| v == b"segm").unwrap();
+    missing_table[at..at + 4].copy_from_slice(b"skip");
+    std::fs::write(&path, missing_table).unwrap();
+    assert!(Store::open(d.path()).is_err());
+    let mut wrong_size = bytes;
+    let at = wrong_size.windows(4).position(|v| v == b"info").unwrap() + 16;
+    wrong_size[at..at + 8].copy_from_slice(&1u64.to_le_bytes());
+    std::fs::write(&path, wrong_size).unwrap();
+    assert!(Store::open(d.path()).is_err());
+    for (delta, protected) in [(1, false), (0, true)] {
+        std::fs::write(
+            &path,
+            common::archive(&[("marker.tjs", b"")], true, true, delta, protected),
+        )
+        .unwrap();
+        assert!(Store::open(d.path()).unwrap().bytes("marker.tjs").is_err());
+    }
+}
+#[test]
+fn invalid_supplements_never_fall_back_to_the_base() {
+    let d = common::game("Preview[c]");
+    std::fs::write(d.path().join("adult.xp3"), b"not an archive").unwrap();
+    assert!(Store::open(d.path()).is_err());
+    std::fs::write(
+        d.path().join("adult.xp3"),
+        common::archive(&[("intro.ks", b"replacement")], true, true, 0, true),
+    )
+    .unwrap();
+    assert!(Store::open(d.path()).unwrap().text("intro.ks").is_err());
+}
+#[test]
 fn checksum_and_protection_fail_closed() {
     for (delta, protected) in [(1, false), (0, true)] {
         let d = tempfile::tempdir().unwrap();
@@ -143,6 +233,7 @@ fn bridge_lists_slots_and_continues_the_latest_valid_save_without_losing_current
             serde_json::from_slice(CStr::from_ptr(json).to_bytes()).unwrap();
         kr_string_free(json);
         assert_eq!(state["scene"]["text"], "Second");
+        assert_eq!(state["archives"], serde_json::json!(["data.xp3"]));
         std::fs::write(saves.path().join("slot-9.json"), b"broken").unwrap();
         assert_eq!(action("load:9"), 0);
         let json = kr_snapshot(host);

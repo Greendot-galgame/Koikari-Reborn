@@ -1,6 +1,9 @@
 import Foundation
 
 final class AssetImport: @unchecked Sendable {
+  static let archiveNames =
+    ["data.xp3", "adult.xp3", "patch.xp3"]
+    + (1...50).map { "patch\($0).xp3" }
   private let lock = NSLock()
   private var cancelled = false
   var isCancelled: Bool { lock.withLock { cancelled } }
@@ -41,9 +44,9 @@ final class AssetImport: @unchecked Sendable {
     let manager = FileManager.default
     var files: [(URL, Int64)] = []
     var total: Int64 = 0
-    for name in ["data.xp3", "patch.xp3"] {
+    for (index, name) in Self.archiveNames.enumerated() {
       let url = source.appendingPathComponent(name)
-      if name == "patch.xp3" && !manager.fileExists(atPath: url.path) { continue }
+      if index > 0 && !manager.fileExists(atPath: url.path) { continue }
       let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
       guard values.isRegularFile == true, let size = values.fileSize, size >= 11 else {
         throw Failure.invalid(name)

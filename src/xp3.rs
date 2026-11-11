@@ -180,7 +180,7 @@ impl Archive {
                     checksum: 0,
                     segments: Vec::new(),
                 };
-                let (mut has_info, mut has_hash) = (false, false);
+                let (mut has_info, mut has_hash, mut has_segments) = (false, false, false);
                 let mut archived_size = 0;
                 for (kind, body) in chunks(chunk)? {
                     match kind {
@@ -206,9 +206,10 @@ impl Archive {
                             has_info = true;
                         }
                         b"segm" => {
-                            if body.len() % 28 != 0 {
+                            if has_segments || body.len() % 28 != 0 {
                                 return Err(invalid("invalid segment table"));
                             }
+                            has_segments = true;
                             for part in body.as_chunks::<28>().0 {
                                 entry.segments.push(Segment {
                                     flags: number(part, 0, 4)? as u32,
@@ -228,7 +229,7 @@ impl Archive {
                         _ => (),
                     }
                 }
-                if !has_info || !has_hash || entry.segments.is_empty() {
+                if !has_info || !has_hash || !has_segments {
                     return Err(invalid("incomplete file entry"));
                 }
                 let total = entry.segments.iter().try_fold(0u64, |n, s| {
@@ -323,6 +324,17 @@ pub trait Assets {
     fn bytes(&self, name: &str) -> Result<Vec<u8>>;
 }
 
+impl Assets for Archive {
+    fn bytes(&self, name: &str) -> Result<Vec<u8>> {
+        let key = normalize(name)?;
+        self.read(
+            self.entries
+                .get(&key)
+                .ok_or_else(|| Error::Missing(name.to_owned()))?,
+        )
+    }
+}
+
 pub struct Store {
     archives: Vec<Archive>,
     pub fingerprint: String,
@@ -330,10 +342,16 @@ pub struct Store {
 impl Store {
     pub fn open(directory: impl AsRef<Path>) -> Result<Self> {
         let directory = directory.as_ref();
-        let mut archives = vec![Archive::open(directory.join("data.xp3"))?];
-        let patch = directory.join("patch.xp3");
-        if patch.exists() {
-            archives.push(Archive::open(patch)?);
+        let names = ["data.xp3", "adult.xp3", "patch.xp3"]
+            .into_iter()
+            .map(str::to_owned)
+            .chain((1..=50).map(|number| format!("patch{number}.xp3")));
+        let mut archives = Vec::new();
+        for (index, name) in names.enumerate() {
+            let path = directory.join(name);
+            if index == 0 || path.try_exists()? {
+                archives.push(Archive::open(path)?);
+            }
         }
         let mut digest = Sha256::new();
         for archive in &archives {
@@ -343,6 +361,13 @@ impl Store {
             archives,
             fingerprint: format!("{:x}", digest.finalize()),
         })
+    }
+    pub fn archive_names(&self) -> Vec<String> {
+        self.archives
+            .iter()
+            .filter_map(|archive| archive.path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect()
     }
     pub fn names(&self) -> Vec<String> {
         let mut names = BTreeMap::new();
