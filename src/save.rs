@@ -1,11 +1,12 @@
-use crate::model::State;
+use crate::model::{Progress, State};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const LIMIT: u64 = 4 * 1024 * 1024;
 pub const SLOTS: [u32; 7] = [1, 2, 3, 4, 5, 6, 9];
 static TEMPORARY: AtomicU64 = AtomicU64::new(0);
@@ -79,30 +80,63 @@ struct Envelope {
     version: u32,
     assets: String,
     state: State,
+    #[serde(default)]
+    rollback: Vec<State>,
 }
 
 pub fn write(directory: &Path, slot: u32, fingerprint: &str, state: &State) -> Result<(), String> {
-    if !(1..=9).contains(&slot) {
+    write_with_rollback(directory, slot, fingerprint, state, &[])
+}
+
+pub fn write_with_rollback(
+    directory: &Path,
+    slot: u32,
+    fingerprint: &str,
+    state: &State,
+    rollback: &[State],
+) -> Result<(), String> {
+    if !SLOTS.contains(&slot) {
         return Err("invalid save slot".into());
     }
-    std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
-    let bytes = serde_json::to_vec(&Envelope {
+    validate_state(state)?;
+    let mut envelope = Envelope {
         version: VERSION,
         assets: fingerprint.into(),
         state: state.clone(),
-    })
-    .map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > LIMIT {
-        return Err("save exceeds limit".into());
+        rollback: rollback.iter().rev().take(100).cloned().collect(),
+    };
+    envelope.rollback.reverse();
+    for checkpoint in &envelope.rollback {
+        validate_state(checkpoint)?;
     }
-    let path = directory.join(format!("slot-{slot}.json"));
+    let bytes = loop {
+        let bytes = serde_json::to_vec(&envelope).map_err(|e| e.to_string())?;
+        if bytes.len() as u64 <= LIMIT {
+            break bytes;
+        }
+        if envelope.rollback.is_empty() {
+            return Err("save exceeds limit".into());
+        }
+        envelope.rollback.remove(0);
+    };
+    atomic_write(directory, &format!("slot-{slot}.json"), &bytes)
+}
+
+// Never follow a destination symlink or replace any file until serialization and
+// size checks have succeeded. The directory must be app-owned (checked by FFI).
+fn atomic_write(directory: &Path, name: &str, bytes: &[u8]) -> Result<(), String> {
+    std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+    let path = directory.join(name);
+    if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err("refusing to replace a symlink in save storage".into());
+    }
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_nanos();
     let sequence = TEMPORARY.fetch_add(1, Ordering::Relaxed);
     let temporary = directory.join(format!(
-        ".slot-{slot}-{}-{stamp}-{sequence}.tmp",
+        ".{name}-{}-{stamp}-{sequence}.tmp",
         std::process::id()
     ));
     let mut file = std::fs::OpenOptions::new()
@@ -111,9 +145,12 @@ pub fn write(directory: &Path, slot: u32, fingerprint: &str, state: &State) -> R
         .open(&temporary)
         .map_err(|e| e.to_string())?;
     let result = (|| {
-        file.write_all(&bytes).map_err(|e| e.to_string())?;
+        file.write_all(bytes).map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
         std::fs::rename(&temporary, &path).map_err(|e| e.to_string())?;
+        std::fs::File::open(directory)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| e.to_string())?;
         Ok(())
     })();
     if result.is_err() {
@@ -122,7 +159,17 @@ pub fn write(directory: &Path, slot: u32, fingerprint: &str, state: &State) -> R
     result
 }
 pub fn read(directory: &Path, slot: u32, fingerprint: &str) -> Result<State, String> {
-    if !(1..=9).contains(&slot) {
+    read_record(directory, slot, fingerprint).map(|record| record.state)
+}
+
+pub struct LoadedSave {
+    pub state: State,
+    pub needs_legacy_migration: bool,
+    pub rollback: Vec<State>,
+}
+
+pub fn read_record(directory: &Path, slot: u32, fingerprint: &str) -> Result<LoadedSave, String> {
+    if !SLOTS.contains(&slot) {
         return Err("invalid save slot".into());
     }
     let file = std::fs::File::open(directory.join(format!("slot-{slot}.json")))
@@ -134,14 +181,174 @@ pub fn read(directory: &Path, slot: u32, fingerprint: &str) -> Result<State, Str
     if bytes.len() as u64 > LIMIT {
         return Err("save exceeds limit".into());
     }
-    let save: Envelope = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-    if save.version != VERSION {
+    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let save: Envelope = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+    if save.version != 1 && save.version != VERSION {
         return Err("save version unsupported".into());
     }
     if save.assets != fingerprint {
         return Err("save belongs to different XP3 archive/patch indexes".into());
     }
-    Ok(save.state)
+    if save.version == VERSION
+        && (value["state"].get("flow").is_none() || value["state"].get("progress").is_none())
+    {
+        return Err("full-state save is missing execution/progress data".into());
+    }
+    validate_state(&save.state)?;
+    if save.rollback.len() > 100 {
+        return Err("saved rollback exceeds limit".into());
+    }
+    for checkpoint in &save.rollback {
+        validate_state(checkpoint)?;
+    }
+    // v1 files are read without rewriting them. Missing additive fields use
+    // serde defaults; Engine::restore must migrate/validate the legacy cursor.
+    let needs_legacy_migration = save.version == 1
+        && (value["state"].get("flow").is_none()
+            || (save.state.flow.event_id.is_none() && save.state.flow.variables.is_empty()));
+    Ok(LoadedSave {
+        state: save.state,
+        needs_legacy_migration,
+        rollback: save.rollback,
+    })
+}
+
+/// Bounds independent of scenario semantics. Engine::validate_state still owns
+/// cursor, route, branch and resource validation before accepting a restored save.
+pub fn validate_state(state: &State) -> Result<(), String> {
+    let flow = &state.flow;
+    if flow.choices.len() > 128
+        || flow.variables.len() > 16384
+        || flow.visited.len() > 16384
+        || flow.wait_ms > 86_400_000
+        || state.scene.visual.commands.len() > 4096
+        || state.scene.visual.previous.len() > 128
+    {
+        return Err("saved runtime exceeds limits".into());
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    if flow
+        .choices
+        .iter()
+        .any(|c| !ids.insert(c.id) || c.text.len() > 65536)
+    {
+        return Err("invalid saved choices".into());
+    }
+    for audio in [&state.scene.bgm, &state.scene.voice, &state.scene.se] {
+        if audio
+            .volume
+            .is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v))
+            || audio.fade_ms > 86_400_000
+        {
+            return Err("invalid saved audio gain/fade".into());
+        }
+    }
+    for l in state
+        .scene
+        .layers
+        .iter()
+        .chain(&state.scene.visual.previous)
+    {
+        if ![l.x, l.y, l.width, l.height, l.opacity]
+            .iter()
+            .all(|v| v.is_finite())
+            || l.width < 0.0
+            || l.height < 0.0
+            || !(0.0..=1.0).contains(&l.opacity)
+        {
+            return Err("invalid saved visual layer".into());
+        }
+    }
+    if state
+        .scene
+        .video
+        .as_ref()
+        .is_some_and(|v| v.asset.is_empty() || v.asset.len() > 4096)
+    {
+        return Err("invalid saved video".into());
+    }
+    validate_progress(&state.progress)
+}
+
+#[derive(Serialize, Deserialize)]
+struct GlobalEnvelope {
+    version: u32,
+    assets: String,
+    progress: Progress,
+}
+
+fn progress_name(fingerprint: &str) -> String {
+    format!("progress-{:x}.json", Sha256::digest(fingerprint.as_bytes()))
+}
+fn validate_progress(progress: &Progress) -> Result<(), String> {
+    if [&progress.events, &progress.cg, &progress.endings]
+        .iter()
+        .any(|s| s.len() > 65536 || s.iter().any(|v| v.len() > 4096))
+        || progress.variables.len() > 16384
+    {
+        return Err("global progress exceeds limits".into());
+    }
+    Ok(())
+}
+
+/// Union real unlocks; keep the authoritative target's global variables on
+/// conflicts. In particular, older saves/rollback cannot reset current globals.
+pub fn merge_progress(target: &mut Progress, older: &Progress) {
+    target.events.extend(older.events.iter().cloned());
+    target.cg.extend(older.cg.iter().cloned());
+    target.endings.extend(older.endings.iter().cloned());
+    for (key, value) in &older.variables {
+        target
+            .variables
+            .entry(key.clone())
+            .or_insert_with(|| value.clone());
+    }
+}
+pub fn read_progress(directory: &Path, fingerprint: &str) -> Result<Progress, String> {
+    let path = directory.join(progress_name(fingerprint));
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Progress::default()),
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut bytes = Vec::new();
+    file.take(LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > LIMIT {
+        return Err("global progress exceeds limit".into());
+    }
+    let envelope: GlobalEnvelope =
+        serde_json::from_slice(&bytes).map_err(|e| format!("global progress is corrupt: {e}"))?;
+    if envelope.version != 1 {
+        return Err("global progress version unsupported".into());
+    }
+    if envelope.assets != fingerprint {
+        return Err("global progress resource fingerprint mismatch".into());
+    }
+    validate_progress(&envelope.progress)?;
+    Ok(envelope.progress)
+}
+pub fn write_progress(
+    directory: &Path,
+    fingerprint: &str,
+    progress: &Progress,
+) -> Result<Progress, String> {
+    let disk = read_progress(directory, fingerprint)?; // Corruption must never be silently reset.
+    let mut merged = progress.clone();
+    merge_progress(&mut merged, &disk);
+    validate_progress(&merged)?;
+    let bytes = serde_json::to_vec(&GlobalEnvelope {
+        version: 1,
+        assets: fingerprint.into(),
+        progress: merged.clone(),
+    })
+    .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > LIMIT {
+        return Err("global progress exceeds limit".into());
+    }
+    atomic_write(directory, &progress_name(fingerprint), &bytes)?;
+    Ok(merged)
 }
 #[cfg(test)]
 mod tests {

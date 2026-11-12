@@ -1,0 +1,17 @@
+name: 功能建议
+description: 提出具体游玩体验或兼容性改进。
+title: "[Feature] "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 希望解决的问题
+      description: 描述使用场景和平台，不附原作资源或存档。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议行为与备选方案
+    validations:
+      required: true

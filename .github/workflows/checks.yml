@@ -1,0 +1,95 @@
+name: Checks
+
+# Initial publication does not start additional testing. PR checks run
+# automatically; maintainers can also run the full workflow manually.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust (${{ matrix.toolchain }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: ["1.88.0", stable]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install native build tools
+        run: |
+          python3 -m venv .build-tools
+          .build-tools/bin/pip install cmake==3.31.10
+          echo "$PWD/.build-tools/bin" >> "$GITHUB_PATH"
+      - name: Install Rust
+        env:
+          TOOLCHAIN: ${{ matrix.toolchain }}
+        run: rustup toolchain install "$TOOLCHAIN" --profile minimal --component rustfmt --component clippy
+      - name: Rust checks (synthetic resources only)
+        env:
+          RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
+          OPUS_NO_PKG: "1"
+        run: |
+          cargo fmt --check
+          cargo test --locked --all-targets
+          cargo clippy --locked --all-targets -- -D warnings
+
+  apple:
+    name: Apple SDKs (arm64)
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install native build tools and Rust
+        run: |
+          python3 -m venv .build-tools
+          .build-tools/bin/pip install cmake==3.31.10
+          echo "$PWD/.build-tools/bin" >> "$GITHUB_PATH"
+          rustup toolchain install stable --profile minimal
+          xcodebuild -version
+      - name: Ensure Metal compiler is installed
+        run: |
+          if ! xcrun --sdk macosx --find metal; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+      - name: Strict native checks
+        run: scripts/check-native.sh
+      - name: Build all three Apple SDKs
+        env:
+          CONFIGURATION: Release
+          RUSTUP_TOOLCHAIN: stable
+        run: |
+          scripts/build-apple.sh macosx
+          scripts/build-apple.sh iphonesimulator
+          scripts/build-apple.sh iphoneos
+      - name: Package resource-free applications
+        run: |
+          mkdir -p target/packages
+          ditto -c -k --sequesterRsrc --keepParent target/xcode-macosx/Build/Products/Release/KoikariReborn.app target/packages/KoikariReborn-macOS-arm64.zip
+          ditto -c -k --sequesterRsrc --keepParent target/xcode-iphonesimulator/Build/Products/Release-iphonesimulator/KoikariReborn.app target/packages/KoikariReborn-iOS-Simulator-arm64.zip
+          ditto -c -k --sequesterRsrc --keepParent target/xcode-iphoneos/Build/Products/Release-iphoneos/KoikariReborn.app target/packages/KoikariReborn-iPhoneOS-arm64-unsigned.zip
+          (cd target/packages && shasum -a 256 *.zip > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: KoikariReborn-Apple-arm64
+          path: target/packages/
+          if-no-files-found: error
+          retention-days: 7

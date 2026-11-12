@@ -165,7 +165,7 @@ fn unsafe_duplicate_and_truncated_archives_rejected() {
 #[test]
 fn pages_and_literal_labels_preserve_dialogue() {
     let d = common::game(
-        "*start\n[Actor]Hello[c]\n@jump target=*end\n[Actor]Skipped[c]\n*end\n[地]World[c]\n@s",
+        "*start\n[Actor]Hello[c]\n@jump target=*end\n[Actor]Skipped[c]\n*end\n[地]World[c]\n@SC_EndProcess",
     );
     let mut game = Engine::open(Arc::new(Store::open(d.path()).unwrap())).unwrap();
     game.start().unwrap();
@@ -181,7 +181,7 @@ fn unknown_command_and_tjs_do_not_get_silently_skipped() {
     for tag in [
         "unsupported",
         "未知命令",
-        "eval exp=\"1 + 1\"",
+        "eval exp=\"System.exit()\"",
         "jump storage=\"&f.next\"",
     ] {
         let d = common::game(&format!("[地]Before[c]\n@{tag}\n[地]After[c]"));
@@ -391,7 +391,13 @@ fn introduction_is_a_resumable_frame_and_switches_the_following_background() {
     engine.advance().unwrap();
     assert_eq!(engine.state, after);
     let mut restored = Engine::open(assets).unwrap();
+    let window = engine
+        .previous_pages()
+        .filter(|s| s.pages < intro.pages)
+        .cloned()
+        .collect();
     restored.restore(intro).unwrap();
+    restored.restore_checkpoints(window).unwrap();
     restored.rewind(before.pages).unwrap();
     assert_eq!(restored.state, before);
 }

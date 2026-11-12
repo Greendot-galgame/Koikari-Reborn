@@ -1,0 +1,45 @@
+name: 缺陷报告
+description: 报告运行时、导入、画面或存档问题，不上传原作资源。
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: "请先阅读 README 的已知问题。不要上传 XP3、原作脚本/素材、存档、凭据或个人路径；安全漏洞请参阅 SECURITY.md。"
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / build number / commit
+      placeholder: 例如 0.5.0 / build 9
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 平台
+      options:
+        - macOS（Apple Silicon）
+        - iPhone 模拟器
+        - iPad 模拟器
+        - iPhone 真机
+        - iPad 真机
+        - Rust 无界面 CLI
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: 系统、设备及 Xcode / Rust 版本
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤、预期与实际结果
+      description: 写明页面/资源文件名、归档覆盖顺序；不粘贴原作脚本或对白。
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 脱敏错误 / 日志
+      render: text
