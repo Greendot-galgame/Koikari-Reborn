@@ -125,15 +125,21 @@ struct MediaLifecyclePolicy: Equatable {
     case interruption, routeLost, activationFailed
   }
   private(set) var foreground = true
+  private(set) var applicationActive = true
   private(set) var blocked = false
   private(set) var interrupted = false
   private(set) var resumeReason: ResumeReason?
 
   var requiresUserResume: Bool { resumeReason != nil }
-  var canRequestUserResume: Bool { foreground && !blocked && !interrupted && requiresUserResume }
-  var permitsPlayback: Bool { foreground && !blocked && !interrupted && !requiresUserResume }
+  var canRequestUserResume: Bool {
+    foreground && applicationActive && !blocked && !interrupted && requiresUserResume
+  }
+  var permitsPlayback: Bool {
+    foreground && applicationActive && !blocked && !interrupted && !requiresUserResume
+  }
 
   mutating func setForeground(_ value: Bool) { foreground = value }
+  mutating func setApplicationActive(_ value: Bool) { applicationActive = value }
   mutating func setBlocked(_ value: Bool) { blocked = value }
   mutating func beginInterruption() { interrupted = true }
   mutating func endInterruption(shouldResume: Bool) {
@@ -294,6 +300,7 @@ struct AudioFailurePolicy {
 
   init() {
     #if os(macOS)
+      mediaPolicy.setApplicationActive(NSApplication.shared.isActive)
       escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
         let handled = MainActor.assumeIsolated {
           guard event.keyCode == 53, let self, self.fastForward else { return false }
@@ -952,6 +959,14 @@ struct AudioFailurePolicy {
       autoSave()
     }
   }
+  func applicationActivityChanged(_ applicationActive: Bool) {
+    mediaPolicy.setApplicationActive(applicationActive)
+    reconcileMediaPlayback()
+    if !applicationActive {
+      stopFastForward()
+      autoSave()
+    }
+  }
   func interruptionBegan() {
     mediaPolicy.beginInterruption()
     reconcileMediaPlayback()
@@ -1476,7 +1491,12 @@ struct Content: View {
         ] + (game.snapshot?.warnings ?? [])).filter { !$0.isEmpty }.joined(separator: "\n\n"),
         close: { showDiagnostics = false })
     }
-    .onAppear { game.sceneActivityChanged(phase == .active) }
+    .onAppear {
+      game.sceneActivityChanged(phase == .active)
+      #if os(macOS)
+        game.applicationActivityChanged(NSApplication.shared.isActive)
+      #endif
+    }
     .onChange(of: phase) { game.sceneActivityChanged($0 == .active) }
     .onChange(
       of: importing || showHistory || showDiagnostics || returnToTitle || showSaves || showSettings
@@ -1508,6 +1528,12 @@ struct Content: View {
         game.outputRouteLost()
       }
     #else
+      .onReceive(
+        NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)
+      ) { _ in game.applicationActivityChanged(false) }
+      .onReceive(
+        NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+      ) { _ in game.applicationActivityChanged(true) }
       .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification))
       { _ in
         game.stopFastForward()
