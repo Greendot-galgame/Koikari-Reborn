@@ -1139,13 +1139,11 @@ fn execute(
                     clip[i] = n as u32;
                 }
                 r.atlas_clips.insert(asset.clone(), clip);
-            } else {
-                if let Some(start) = r.atlas_starts.remove(asset) {
-                    r.atlas_paused
-                        .insert(asset.clone(), now.saturating_sub(start));
-                } else if !r.atlas_paused.contains_key(asset) {
-                    return Err("atlas_stop requires a started atlas".into());
-                }
+            } else if let Some(start) = r.atlas_starts.remove(asset) {
+                r.atlas_paused
+                    .insert(asset.clone(), now.saturating_sub(start));
+            } else if !r.atlas_paused.contains_key(asset) {
+                return Err("atlas_stop requires a started atlas".into());
             }
         }
         _ => return Ok(Outcome::Unhandled),

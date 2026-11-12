@@ -486,11 +486,11 @@ impl Engine {
             }
         }
         for (selection, id) in &state.flow.selected {
-            if !self
+            if self
                 .database
                 .selections
                 .get(*selection)
-                .is_some_and(|s| *id < s.text.len())
+                .is_none_or(|s| *id >= s.text.len())
             {
                 return Err("saved selected branch out of bounds".into());
             }
@@ -1427,9 +1427,7 @@ impl Engine {
         self.state.scene.layers.retain(|layer| {
             layer.group != number
                 && (sprite.position != "fc"
-                    || !sprites
-                        .get(&layer.group)
-                        .is_some_and(|s| s.position == "fc"))
+                    || sprites.get(&layer.group).is_none_or(|s| s.position != "fc"))
         });
         if sprite.position == "fc" {
             self.state.sprites.retain(|_, s| s.position != "fc");
