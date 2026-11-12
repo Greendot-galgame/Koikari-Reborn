@@ -30,6 +30,7 @@ Joined[c]
 @SC_EndProcess
 "#;
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 #[test]
 fn real_ffi_skips_only_explicitly_skippable_waits_once() {
     use koikari_reborn::ffi::*;

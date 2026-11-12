@@ -1189,6 +1189,7 @@ pub fn layers(scene: &Scene) -> Vec<Layer> {
         .map(|r| evaluated(scene, &r))
         .unwrap_or_default()
 }
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub(crate) struct Frame {
     pub current: Vec<Layer>,
     pub previous: Vec<Layer>,
@@ -1202,6 +1203,7 @@ pub(crate) struct Frame {
     pub atlas_times: BTreeMap<String, u64>,
     pub atlas_clips: BTreeMap<String, [u32; 4]>,
 }
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub(crate) fn frame(scene: &Scene) -> Result<Frame, String> {
     let r = read(scene)?;
     let current = evaluated(scene, &r);

@@ -31,6 +31,7 @@ fn all_effective_entries_pass_strict_archive_integrity() {
     );
 }
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 #[test]
 #[ignore = "requires user-owned XP3; validates the actual native message-layer ABI"]
 fn message_glyph_uses_verified_base_and_sheet_geometry() {
