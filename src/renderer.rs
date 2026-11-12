@@ -15,7 +15,12 @@ const DECODE_LIMIT: usize = 128 * 1024 * 1024;
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 enum TextureKey {
     Asset(String),
-    Composite(Vec<String>),
+    Composite { assets: Vec<String>, clip: [u32; 4] },
+}
+#[derive(Clone, Copy)]
+struct ImageInfo {
+    size: [u32; 2],
+    atlas: bool,
 }
 struct DrawLayer {
     layer: Layer,
@@ -53,6 +58,8 @@ pub struct Renderer {
     canvases: [Texture; 2],
     white: Texture,
     cache: HashMap<TextureKey, Cached>,
+    images: HashMap<String, ImageInfo>,
+    peak_bytes: usize,
     clock: u64,
 }
 
@@ -146,6 +153,8 @@ impl Renderer {
             canvases,
             white,
             cache: HashMap::new(),
+            images: HashMap::new(),
+            peak_bytes: 0,
             clock: 0,
         })
     }
@@ -173,6 +182,25 @@ impl Renderer {
             total -= self.cache.remove(&key).expect("cache entry exists").bytes;
         }
         Ok(())
+    }
+    fn reserve(&mut self, active: &HashSet<TextureKey>, incoming: usize) -> Result<(), String> {
+        self.evict(active, incoming, TEXTURE_LIMIT)?;
+        self.peak_bytes = self
+            .peak_bytes
+            .max(self.cache.values().map(|v| v.bytes).sum::<usize>() + incoming);
+        Ok(())
+    }
+
+    fn decode(bytes: &[u8], wide: bool) -> Result<image::RgbaImage, String> {
+        let mut reader = image::ImageReader::new(Cursor::new(bytes))
+            .with_guessed_format()
+            .map_err(|e| e.to_string())?;
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(if wide { 32768 } else { 8192 });
+        limits.max_image_height = Some(8192);
+        limits.max_alloc = Some(DECODE_LIMIT as u64);
+        reader.limits(limits);
+        Ok(reader.decode().map_err(|e| e.to_string())?.into_rgba8())
     }
     fn load(
         &mut self,
@@ -244,16 +272,8 @@ impl Renderer {
                 s.checked_add(r[2] as usize * r[3] as usize * 4)
             })
             .ok_or("atlas texture size overflow")?;
-        self.evict(active, incoming, TEXTURE_LIMIT)?;
-        let mut reader = image::ImageReader::new(Cursor::new(&bytes))
-            .with_guessed_format()
-            .map_err(|e| e.to_string())?;
-        let mut limits = image::Limits::default();
-        limits.max_image_width = Some(if animation.is_some() { 32768 } else { 8192 });
-        limits.max_image_height = Some(8192);
-        limits.max_alloc = Some(DECODE_LIMIT as u64);
-        reader.limits(limits);
-        let rgba = reader.decode().map_err(|e| e.to_string())?.to_rgba8();
+        self.reserve(active, incoming)?;
+        let rgba = Self::decode(&bytes, animation.is_some())?;
         let mut frames = Vec::new();
         for rect in rectangles {
             let [x, y, w, h] = rect;
@@ -318,11 +338,56 @@ impl Renderer {
         encoder.draw_primitives(MTLPrimitiveType::TriangleStrip, 0, 4);
     }
 
+    fn image_info(&mut self, store: &Store, name: &str) -> Result<ImageInfo, String> {
+        if let Some(info) = self.images.get(name) {
+            return Ok(*info);
+        }
+        let bytes = store.bytes(name).map_err(|e| e.to_string())?;
+        let (width, height) = image::ImageReader::new(Cursor::new(&bytes))
+            .with_guessed_format()
+            .map_err(|e| e.to_string())?
+            .into_dimensions()
+            .map_err(|e| e.to_string())?;
+        let info = ImageInfo {
+            size: [width, height],
+            atlas: name
+                .rsplit_once('.')
+                .is_some_and(|(stem, _)| store.find(&format!("{stem}.asd"), &["asd"]).is_ok()),
+        };
+        self.images.insert(name.into(), info);
+        Ok(info)
+    }
+
+    fn visible_clip(layer: &Layer, size: [u32; 2]) -> Option<[u32; 4]> {
+        let mut clip = [0; 4];
+        for (axis, (origin, span, extent)) in [
+            (layer.x, layer.width, WIDTH),
+            (layer.y, layer.height, HEIGHT),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let scale = span / size[axis] as f32;
+            let start = (-origin / scale - 1.0)
+                .floor()
+                .clamp(0.0, size[axis] as f32) as u32;
+            let end = ((extent - origin) / scale + 1.0)
+                .ceil()
+                .clamp(0.0, size[axis] as f32) as u32;
+            if start >= end {
+                return None;
+            }
+            // Stable blocks plus a filtering halo avoid rebuilding for each subpixel move.
+            clip[axis] = start / 512 * 512;
+            clip[axis + 2] = (end.div_ceil(512) * 512).min(size[axis]) - clip[axis];
+        }
+        Some(clip)
+    }
+
     fn prepare_layers(
         &mut self,
-        command: &CommandBufferRef,
+        store: &Store,
         layers: &[Layer],
-        active: &mut HashSet<TextureKey>,
     ) -> Result<Vec<DrawLayer>, String> {
         let mut result = Vec::new();
         let mut start = 0;
@@ -334,93 +399,61 @@ impl Renderer {
                     .take_while(|l| l.group == first.group)
                     .count();
             let group = &layers[start..end];
-            let base = &self.cache[&TextureKey::Asset(first.asset.clone())];
-            let [width, height] = base.source_size;
-            let scale = [first.width / width as f32, first.height / height as f32];
-            let composable = first.group != 0
-                && group.len() > 1
-                && scale.iter().all(|s| s.is_finite() && *s > 0.0)
-                && group.iter().all(|l| {
-                    let source = &self.cache[&TextureKey::Asset(l.asset.clone())];
-                    source.animation.is_none()
-                        && source.source_size[0] <= width
-                        && source.source_size[1] <= height
-                        && l.x == first.x
-                        && l.y == first.y
-                        && l.opacity == first.opacity
-                        && (l.width - source.source_size[0] as f32 * scale[0]).abs() < 0.01
-                        && (l.height - source.source_size[1] as f32 * scale[1]).abs() < 0.01
-                });
-            if composable {
-                // Composite native cutouts before any subpixel motion or scaling.
-                let key = TextureKey::Composite(group.iter().map(|l| l.asset.clone()).collect());
-                active.insert(key.clone());
-                if let Some(cached) = self.cache.get_mut(&key) {
-                    cached.used = self.clock;
-                } else {
-                    let bytes = width as usize * height as usize * 4;
-                    self.evict(active, bytes, TEXTURE_LIMIT)?;
-                    let tex = texture(
-                        &self.device,
-                        width,
-                        height,
-                        MTLPixelFormat::BGRA8Unorm,
-                        true,
-                    );
-                    let pass = RenderPassDescriptor::new();
-                    let color = pass
-                        .color_attachments()
-                        .object_at(0)
-                        .ok_or("no Metal attachment")?;
-                    color.set_texture(Some(&tex));
-                    color.set_load_action(MTLLoadAction::Clear);
-                    color.set_store_action(MTLStoreAction::Store);
-                    color.set_clear_color(MTLClearColor::new(0.0, 0.0, 0.0, 0.0));
-                    let encoder = command.new_render_command_encoder(pass);
-                    encoder.set_render_pipeline_state(&self.pipeline);
-                    encoder.set_viewport(MTLViewport {
-                        originX: 0.0,
-                        originY: 0.0,
-                        width: width as f64,
-                        height: height as f64,
-                        znear: 0.0,
-                        zfar: 1.0,
-                    });
-                    for l in group {
-                        let source = &self.cache[&TextureKey::Asset(l.asset.clone())];
-                        let (image, _) = source.frame(0);
-                        Self::draw_quad(
-                            encoder,
-                            image,
-                            [
-                                -1.0,
-                                1.0,
-                                source.source_size[0] as f32 / width as f32 * 2.0,
-                                source.source_size[1] as f32 / height as f32 * 2.0,
-                            ],
-                            1.0,
-                            false,
-                            &Style::default(),
-                        );
-                    }
-                    encoder.end_encoding();
-                    let clip = [0, 0, width, height];
-                    self.cache.insert(
-                        key.clone(),
-                        Cached {
-                            frames: vec![(clip, tex)],
-                            animation: None,
-                            initial_clip: clip,
-                            source_size: [width, height],
-                            bytes,
-                            used: self.clock,
-                        },
-                    );
+            for l in group {
+                if ![l.x, l.y, l.width, l.height, l.opacity]
+                    .iter()
+                    .all(|v| v.is_finite())
+                    || l.width < 0.0
+                    || l.height < 0.0
+                {
+                    return Err("invalid layer geometry".into());
                 }
-                result.push(DrawLayer {
-                    layer: first.clone(),
-                    key,
-                });
+            }
+            let mut composable = false;
+            let mut size = [0, 0];
+            let mut scale = [0.0, 0.0];
+            if first.group != 0 && group.len() > 1 {
+                let images: Vec<_> = group
+                    .iter()
+                    .map(|l| self.image_info(store, &l.asset))
+                    .collect::<Result<_, _>>()?;
+                size = images[0].size;
+                let [width, height] = size;
+                scale = [first.width / width as f32, first.height / height as f32];
+                composable = width > 0
+                    && height > 0
+                    && width <= 8192
+                    && height <= 8192
+                    && width as usize * height as usize * 4 <= DECODE_LIMIT
+                    && scale.iter().all(|s| s.is_finite() && *s > 0.0)
+                    && group.iter().zip(images).all(|(l, source)| {
+                        !source.atlas
+                            && source.size[0] > 0
+                            && source.size[1] > 0
+                            && source.size[0] <= width
+                            && source.size[1] <= height
+                            && l.x == first.x
+                            && l.y == first.y
+                            && l.opacity == first.opacity
+                            && (l.width - source.size[0] as f32 * scale[0]).abs() < 0.01
+                            && (l.height - source.size[1] as f32 * scale[1]).abs() < 0.01
+                    });
+            }
+            if composable {
+                if let Some(clip) = Self::visible_clip(first, size) {
+                    let mut layer = first.clone();
+                    layer.x += clip[0] as f32 * scale[0];
+                    layer.y += clip[1] as f32 * scale[1];
+                    layer.width = clip[2] as f32 * scale[0];
+                    layer.height = clip[3] as f32 * scale[1];
+                    result.push(DrawLayer {
+                        layer,
+                        key: TextureKey::Composite {
+                            assets: group.iter().map(|l| l.asset.clone()).collect(),
+                            clip,
+                        },
+                    });
+                }
             } else {
                 result.extend(group.iter().map(|l| DrawLayer {
                     layer: l.clone(),
@@ -430,6 +463,66 @@ impl Renderer {
             start = end;
         }
         Ok(result)
+    }
+
+    fn load_composite(
+        &mut self,
+        store: &Store,
+        key: &TextureKey,
+        active: &HashSet<TextureKey>,
+    ) -> Result<(), String> {
+        if let Some(cached) = self.cache.get_mut(key) {
+            cached.used = self.clock;
+            return Ok(());
+        }
+        let TextureKey::Composite { assets, clip } = key else {
+            return Err("expected a composite texture".into());
+        };
+        let &[x, y, width, height] = clip;
+        let bytes = width as usize * height as usize * 4;
+        self.reserve(active, bytes)?;
+        let mut rgba = image::RgbaImage::new(width, height);
+        // Decode one source at a time; source textures and offscreen body pixels never enter VRAM.
+        for name in assets {
+            let size = self.images[name].size;
+            if size[0] <= x || size[1] <= y {
+                continue;
+            }
+            let source = Self::decode(&store.bytes(name).map_err(|e| e.to_string())?, false)?;
+            image::imageops::overlay(&mut rgba, &source, -(x as i64), -(y as i64));
+        }
+        for pixel in rgba.pixels_mut() {
+            let alpha = u16::from(pixel[3]);
+            for channel in &mut pixel.0[..3] {
+                *channel = ((u16::from(*channel) * alpha + 127) / 255) as u8;
+            }
+        }
+        let tex = texture(
+            &self.device,
+            width,
+            height,
+            MTLPixelFormat::RGBA8Unorm,
+            false,
+        );
+        tex.replace_region(
+            MTLRegion::new_2d(0, 0, width as u64, height as u64),
+            0,
+            rgba.as_ptr().cast(),
+            width as u64 * 4,
+        );
+        let clip = [0, 0, width, height];
+        self.cache.insert(
+            key.clone(),
+            Cached {
+                frames: vec![(clip, tex)],
+                animation: None,
+                initial_clip: clip,
+                source_size: [width, height],
+                bytes,
+                used: self.clock,
+            },
+        );
+        Ok(())
     }
 
     fn encode_layers(
@@ -496,7 +589,7 @@ impl Renderer {
                     height / HEIGHT * 2.0,
                 ],
                 l.opacity,
-                matches!(key, TextureKey::Composite(_)),
+                matches!(key, TextureKey::Composite { .. }),
                 &style,
             );
         }
@@ -513,7 +606,7 @@ impl Renderer {
         let result = self.encode_frame(scene, store, target);
         if result.is_err() {
             self.cache.retain(|key, cached| {
-                !matches!(key, TextureKey::Composite(_)) || cached.used != self.clock
+                !matches!(key, TextureKey::Composite { .. }) || cached.used != self.clock
             });
         }
         result
@@ -527,11 +620,16 @@ impl Renderer {
     ) -> Result<CommandBuffer, String> {
         let frame = animation::frame(scene)?;
         self.clock = self.clock.wrapping_add(1);
-        let mut active: HashSet<TextureKey> = frame
-            .current
+        let current = self.prepare_layers(store, &frame.current)?;
+        let previous = if frame.progress < 1.0 {
+            self.prepare_layers(store, &frame.previous)?
+        } else {
+            Vec::new()
+        };
+        let mut active: HashSet<TextureKey> = current
             .iter()
-            .chain(&frame.previous)
-            .map(|l| TextureKey::Asset(l.asset.clone()))
+            .chain(&previous)
+            .map(|l| l.key.clone())
             .collect();
         let rule = if frame.kind == 1 && frame.progress < 1.0 {
             Some(
@@ -547,6 +645,7 @@ impl Renderer {
         }
         for key in &active {
             let TextureKey::Asset(name) = key else {
+                self.load_composite(store, key, &active)?;
                 continue;
             };
             self.load(
@@ -558,12 +657,6 @@ impl Renderer {
             )?;
         }
         let command = self.queue.new_command_buffer().to_owned();
-        let current = self.prepare_layers(&command, &frame.current, &mut active)?;
-        let previous = if frame.progress < 1.0 {
-            self.prepare_layers(&command, &frame.previous, &mut active)?
-        } else {
-            Vec::new()
-        };
         self.evict(&active, 0, CACHE_LIMIT)?;
         self.encode_layers(
             &command,
@@ -678,6 +771,10 @@ impl Renderer {
                 .max()
                 .unwrap_or(0),
         )
+    }
+    /// Peak reserved GPU asset bytes, excluding the fixed scene targets and caller-owned target.
+    pub fn peak_texture_bytes(&self) -> usize {
+        self.peak_bytes
     }
     /// # Safety
     /// Supply the original live CAMetalLayer on the main thread, without concurrent access.

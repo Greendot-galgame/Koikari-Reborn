@@ -546,6 +546,87 @@ mod gpu {
 
     #[test]
     #[ignore = "requires Metal device; explicit headless GPU validation"]
+    fn metal_character_cache_crops_offscreen_pixels_and_reuses_subpixel_moves() {
+        let device = Device::system_default().expect("Metal device required");
+        let mut renderer = Renderer::for_device(device.clone()).unwrap();
+        let target = target(&device, 64, 36);
+        let body = png(1024, 4096, |x, y| [x as u8, y as u8, 64, 255]);
+        let face = png(2, 2, |_, _| [0; 4]);
+        let (_directory, store) = store(&[("body.png", &body), ("face.png", &face)]);
+        let mut body = layer("body.png", 1, 400.0, -700.0);
+        body.width = 1024.0;
+        body.height = 4096.0;
+        let mut face = layer("face.png", 1, body.x, body.y);
+        face.width = 2.0;
+        face.height = 2.0;
+        let mut scene = Scene {
+            layers: vec![body, face],
+            ..Scene::default()
+        };
+        renderer.render_to_texture(&scene, &store, &target).unwrap();
+        rgb_near(pixel(&target, 32, 18), [132, 160, 64]);
+        let usage = renderer.cache_usage();
+        assert!(usage.0 < 12 * 1024 * 1024);
+        for l in &mut scene.layers {
+            l.x += 0.5;
+            l.y -= 0.25;
+        }
+        renderer.render_to_texture(&scene, &store, &target).unwrap();
+        assert_eq!(renderer.cache_usage(), usage);
+        for l in &mut scene.layers {
+            l.y = -2000.0;
+        }
+        renderer.render_to_texture(&scene, &store, &target).unwrap();
+        rgb_near(pixel(&target, 32, 18), [131, 180, 64]);
+        for l in &mut scene.layers {
+            l.y = 2000.0;
+        }
+        renderer.render_to_texture(&scene, &store, &target).unwrap();
+        rgb_near(pixel(&target, 32, 18), [0, 0, 0]);
+        assert!(renderer.peak_texture_bytes() <= 256 * 1024 * 1024);
+    }
+
+    #[test]
+    #[ignore = "requires Metal device; explicit headless GPU validation"]
+    fn metal_large_character_transition_does_not_duplicate_source_textures() {
+        let device = Device::system_default().expect("Metal device required");
+        let mut renderer = Renderer::for_device(device.clone()).unwrap();
+        let target = target(&device, 64, 36);
+        let body = png(3072, 6144, |_, _| [32, 64, 128, 255]);
+        let face = png(3072, 1024, |_, _| [128, 64, 32, 128]);
+        let (_directory, store) = store(&[
+            ("body0.png", &body),
+            ("face0.png", &face),
+            ("body1.png", &body),
+            ("face1.png", &face),
+        ]);
+        let layers = |body, face| {
+            let mut body = layer(body, 1, 0.0, 0.0);
+            body.width = 3072.0;
+            body.height = 6144.0;
+            let mut face = layer(face, 1, 0.0, 0.0);
+            face.width = 3072.0;
+            face.height = 1024.0;
+            vec![body, face]
+        };
+        let mut scene = Scene {
+            layers: layers("body0.png", "face0.png"),
+            ..Scene::default()
+        };
+        call(&mut scene, "ts", &[]);
+        scene.layers = layers("body1.png", "face1.png");
+        call(&mut scene, "te", &[("time", "100")]);
+        animation::tick(&mut scene, 50);
+        renderer.render_to_texture(&scene, &store, &target).unwrap();
+        rgb_near(pixel(&target, 32, 18), [80, 64, 80]);
+        assert!(renderer.peak_texture_bytes() < 64 * 1024 * 1024);
+        animation::tick(&mut scene, 50);
+        renderer.render_to_texture(&scene, &store, &target).unwrap();
+        rgb_near(pixel(&target, 32, 18), [80, 64, 80]);
+    }
+
+    #[test]
+    #[ignore = "requires Metal device; explicit headless GPU validation"]
     fn metal_scene_composition_alpha_filters_whiteout_rule_and_letterbox() {
         let device = Device::system_default().expect("Metal device required");
         let mut renderer = Renderer::for_device(device.clone()).unwrap();
