@@ -236,6 +236,7 @@ struct AudioFailurePolicy {
   @Published var saveWarning: String?
   @Published var importProgress = 0.0
   @Published var importDetail = "正在检查资源…"
+  @Published var resourceStatus = "尚未找到 data.xp3，请先放入资源文件。"
   @Published var bgmVolume = Game.preference("bgmVolume", fallback: 0.35) {
     didSet {
       UserDefaults.standard.set(bgmVolume, forKey: "bgmVolume")
@@ -279,6 +280,7 @@ struct AudioFailurePolicy {
   private let support = FileManager.default.urls(
     for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(
       "KoikariReborn")
+  private let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
 
   nonisolated private static func preference(
     _ key: String, fallback: Double, range: ClosedRange<Double> = 0...1
@@ -316,16 +318,27 @@ struct AudioFailurePolicy {
         try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
         if !muted { try AVAudioSession.sharedInstance().setActive(true) }
       } catch { failAudioOutput("音频会话未能启动：\(error.localizedDescription)") }
+      do {
+        let folder = try AssetLocation.prepareDocumentResources(in: documents)
+        if FileManager.default.fileExists(atPath: folder.appendingPathComponent("data.xp3").path) {
+          reloadDocumentResources()
+          return
+        }
+      } catch { self.error = "无法创建资源文件夹：\(error.localizedDescription)" }
     #endif
     let args = CommandLine.arguments
     if let index = args.firstIndex(of: "--assets"), index + 1 < args.count {
       connect(URL(fileURLWithPath: args[index + 1]))
     } else if let path = UserDefaults.standard.string(forKey: "assets") {
       #if os(iOS)
-        if let directory = AssetLocation.resolve(path, relativeTo: support) {
+        if path == AssetLocation.documentIdentifier {
+          resourceStatus = "GameResources 中未找到 data.xp3，请先放入资源文件。"
+        } else if let directory = AssetLocation.resolve(
+          path, relativeTo: support, documents: documents)
+        {
           connect(directory)
         } else {
-          error = "无法恢复资源位置，请重新导入 XP3 所在文件夹。"
+          error = "无法恢复旧资源位置。原存档仍保留，请将 XP3 放入本应用文稿的 GameResources 文件夹。"
         }
       #else
         connect(URL(fileURLWithPath: path))
@@ -344,8 +357,11 @@ struct AudioFailurePolicy {
   }
   @discardableResult func connect(_ directory: URL) -> Bool {
     #if os(iOS)
-      guard let location = AssetLocation.identifier(for: directory, relativeTo: support) else {
-        error = "请先将 XP3 导入应用资源目录。"
+      guard
+        let location = AssetLocation.identifier(
+          for: directory, relativeTo: support, documents: documents)
+      else {
+        error = "请将 XP3 放入本应用文稿的 GameResources 文件夹。"
         return false
       }
     #else
@@ -378,8 +394,34 @@ struct AudioFailurePolicy {
     UserDefaults.standard.set(location, forKey: "assets")
     refresh(forceAudio: true)
     reloadSaves()
+    #if os(iOS)
+      resourceStatus =
+        location == AssetLocation.documentIdentifier
+        ? "已直接载入 GameResources 中的资源，不创建额外副本。"
+        : "当前使用以前导入的资源；原资源和存档已保留。"
+    #endif
     return true
   }
+  #if os(iOS)
+    func reloadDocumentResources() {
+      guard !importing, snapshot?.title != false else { return }
+      do {
+        let folder = try AssetLocation.prepareDocumentResources(in: documents)
+        guard
+          FileManager.default.fileExists(
+            atPath: folder.appendingPathComponent("data.xp3").path)
+        else {
+          resourceStatus = "GameResources 中未找到 data.xp3。请等待文件移动完成后重新检查。"
+          return
+        }
+        resourceStatus = "正在检查并载入资源…"
+        if !connect(folder) { resourceStatus = "资源载入失败，请查看提示；原资源与存档未删除。" }
+      } catch {
+        resourceStatus = "无法访问资源文件夹。"
+        self.error = "资源检查失败：\(error.localizedDescription)"
+      }
+    }
+  #endif
   func importDirectory(_ url: URL) {
     guard !importing else { return }
     #if os(macOS)
@@ -958,6 +1000,9 @@ struct AudioFailurePolicy {
       stopFastForward()
       autoSave()
     }
+    #if os(iOS)
+      if foreground, handle == nil, error == nil { reloadDocumentResources() }
+    #endif
   }
   func applicationActivityChanged(_ applicationActive: Bool) {
     mediaPolicy.setApplicationActive(applicationActive)
@@ -1246,8 +1291,17 @@ struct Content: View {
                   Button("场景回想") { openCollection(replay: true) }
                 }
               }
-              Button(game.handle == nil ? "导入 XP3 所在文件夹" : "更换资源文件夹") { importing = true }
-                .accessibilityIdentifier("import-assets")
+              #if os(macOS)
+                Button(game.handle == nil ? "导入 XP3 所在文件夹" : "更换资源文件夹") { importing = true }
+                  .accessibilityIdentifier("import-assets")
+              #else
+                Button("重新检查资源") { game.reloadDocumentResources() }
+                  .accessibilityIdentifier("reload-resources")
+                Text("文件 → 我的 iPad/iPhone → 本应用 → GameResources")
+                  .font(.system(size: 11)).multilineTextAlignment(.center)
+                Text(game.resourceStatus).font(.system(size: 11)).foregroundStyle(.secondary)
+                  .multilineTextAlignment(.center)
+              #endif
               Text("本地 data.xp3，可附加 adult.xp3 / patch*.xp3 · 不加载 Windows / Steam")
                 .font(.system(size: 10)).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
@@ -1418,14 +1472,16 @@ struct Content: View {
           .padding(.top, 50).allowsHitTesting(false)
       }
     }
-    .fileImporter(
-      isPresented: $importing, allowedContentTypes: [.folder], allowsMultipleSelection: false
-    ) { result in
-      switch result {
-      case .success(let urls): if let url = urls.first { game.importDirectory(url) }
-      case .failure(let error): game.error = error.localizedDescription
+    #if os(macOS)
+      .fileImporter(
+        isPresented: $importing, allowedContentTypes: [.folder], allowsMultipleSelection: false
+      ) { result in
+        switch result {
+        case .success(let urls): if let url = urls.first { game.importDirectory(url) }
+        case .failure(let error): game.error = error.localizedDescription
+        }
       }
-    }
+    #endif
     .alert(
       "运行提示", isPresented: Binding(get: { game.error != nil }, set: { if !$0 { game.error = nil } })
     ) {
