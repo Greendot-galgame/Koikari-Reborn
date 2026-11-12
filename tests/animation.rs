@@ -495,6 +495,57 @@ mod gpu {
 
     #[test]
     #[ignore = "requires Metal device; explicit headless GPU validation"]
+    fn metal_sprite_cutouts_are_composited_before_filtering_and_opacity() {
+        let device = Device::system_default().expect("Metal device required");
+        let mut renderer = Renderer::for_device(device.clone()).unwrap();
+        let target = target(&device, 64, 36);
+        let skin = [240, 180, 140, 255];
+        let base = png(2, 2, |x, _| if x == 0 { skin } else { [0; 4] });
+        let face = png(2, 2, |x, _| if x == 1 { skin } else { [0; 4] });
+        let translucent = png(2, 2, |x, _| if x == 1 { [0, 255, 0, 128] } else { [0; 4] });
+        let blue = png(2, 2, |_, _| [0, 0, 255, 255]);
+        let (_d, store) = store(&[
+            ("base.png", &base),
+            ("face.png", &face),
+            ("translucent.png", &translucent),
+            ("blue.png", &blue),
+        ]);
+        let mut s = Scene {
+            layers: vec![
+                layer("blue.png", 0, 0.0, 0.0),
+                layer("base.png", 1, 0.5, 0.25),
+                layer("face.png", 1, 0.5, 0.25),
+            ],
+            ..Scene::default()
+        };
+        renderer.render_to_texture(&s, &store, &target).unwrap();
+        for x in [16, 31, 32, 48] {
+            rgb_near(pixel(&target, x, 18), [240, 180, 140]);
+        }
+        for l in &mut s.layers[1..] {
+            l.opacity = 0.5;
+        }
+        renderer.render_to_texture(&s, &store, &target).unwrap();
+        rgb_near(pixel(&target, 32, 18), [120, 90, 197]);
+        let usage = renderer.cache_usage();
+        renderer.render_to_texture(&s, &store, &target).unwrap();
+        assert_eq!(renderer.cache_usage(), usage);
+
+        for l in &mut s.layers[1..] {
+            l.opacity = 1.0;
+        }
+        s.layers[2].asset = "translucent.png".into();
+        let mut invalid = s.clone();
+        invalid.layers.push(layer("blue.png", 2, f32::NAN, 0.0));
+        assert!(renderer
+            .render_to_texture(&invalid, &store, &target)
+            .is_err());
+        renderer.render_to_texture(&s, &store, &target).unwrap();
+        rgb_near(pixel(&target, 32, 18), [116, 153, 133]);
+    }
+
+    #[test]
+    #[ignore = "requires Metal device; explicit headless GPU validation"]
     fn metal_scene_composition_alpha_filters_whiteout_rule_and_letterbox() {
         let device = Device::system_default().expect("Metal device required");
         let mut renderer = Renderer::for_device(device.clone()).unwrap();

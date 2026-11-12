@@ -327,6 +327,49 @@ fn scene_changes_clear_sprites_but_background_updates_preserve_them() {
 }
 
 #[test]
+fn dialogue_continue_stops_old_motions_but_raw_line_wait_preserves_them() {
+    use koikari_reborn::animation;
+    for (delimiter, stops) in [("c", true), ("p", false), ("l", false)] {
+        let directory = sprite_game(&format!(
+            "@stc ch=6 f=111\n@t_move lay=6 ppe=true\nFirst[{delimiter}]\nSecond[c]\nThird[c]"
+        ));
+        let mut engine = Engine::open(Arc::new(Store::open(directory.path()).unwrap())).unwrap();
+        engine.start().unwrap();
+        while engine.state.flow.wait_ms > 0 {
+            engine.tick(engine.state.flow.wait_ms).unwrap();
+        }
+        engine.tick(7).unwrap();
+        assert_ne!(
+            animation::layers(&engine.state.scene),
+            engine.state.scene.layers
+        );
+        let saved = engine.state.clone();
+        engine.restore(saved.clone()).unwrap();
+        assert_eq!(engine.state, saved);
+        engine.advance().unwrap();
+        let second = engine.state.clone();
+        engine.tick(19).unwrap();
+        assert_eq!(
+            animation::layers(&engine.state.scene) == second.scene.layers,
+            stops
+        );
+        engine.advance().unwrap();
+        engine.tick(123).unwrap();
+        assert_eq!(
+            animation::layers(&engine.state.scene),
+            engine.state.scene.layers
+        );
+        engine.rewind(second.pages).unwrap();
+        engine.advance().unwrap();
+        engine.tick(13).unwrap();
+        assert_eq!(
+            animation::layers(&engine.state.scene),
+            engine.state.scene.layers
+        );
+    }
+}
+
+#[test]
 fn face_mode_overrides_stage_position_and_replaces_the_previous_portrait_only() {
     let directory = sprite_game(
         "@stc ch=7 pr f=111\n@stc ch=6 pc fc f=111\n[地]First[c]\n@stc ch=7 pr f=111 fcenabled=true\n[地]Second[c]"

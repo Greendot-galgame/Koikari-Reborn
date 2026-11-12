@@ -20,6 +20,7 @@ vertex Raster quad_vertex(uint id [[vertex_id]], constant Quad& quad [[buffer(0)
 fragment float4 quad_fragment(Raster in [[stage_in]], constant Quad& q [[buffer(0)]], texture2d<float> image [[texture(0)]]) {
     constexpr sampler sampling(filter::linear, address::clamp_to_edge);
     float4 pixel = image.sample(sampling,in.uv);
+    if (q.parameters.z > 0.5) pixel.rgb = pixel.a > 0.0 ? pixel.rgb / pixel.a : float3(0);
     if (q.parameters.y > 0.5) pixel.rgb = dot(pixel.rgb,float3(0.299,0.587,0.114));
     pixel.rgb = mix(q.floor.rgb,q.ceiling.rgb,pow(max(pixel.rgb,float3(0)),1.0/q.gamma.rgb));
     pixel.rgb = mix(pixel.rgb,q.tint.rgb,q.tint.a);

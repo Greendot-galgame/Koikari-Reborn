@@ -109,6 +109,28 @@ fn next_page(engine: &mut Engine) {
 }
 
 #[test]
+#[ignore = "requires user-owned XP3; reported character pages do not retain stale shaking"]
+fn reported_character_pages_do_not_inherit_previous_dialogue_motions() {
+    let mut engine = Engine::open(store()).unwrap();
+    engine.start().unwrap();
+    let mut checked = 0;
+    while engine.state.pages <= 345 {
+        if [217, 345].contains(&engine.state.pages) {
+            let mut scene = engine.state.scene.clone();
+            koikari_reborn::animation::tick(&mut scene, 5000);
+            let settled = koikari_reborn::animation::layers(&scene);
+            for milliseconds in [7, 13, 29, 53] {
+                koikari_reborn::animation::tick(&mut scene, milliseconds);
+                assert_eq!(koikari_reborn::animation::layers(&scene), settled);
+            }
+            checked += 1;
+        }
+        next_page(&mut engine);
+    }
+    assert_eq!(checked, 2);
+}
+
+#[test]
 #[ignore = "requires user-owned XP3"]
 fn opening_continues_into_the_next_database_event_without_false_ending() {
     let mut engine = Engine::open(store()).unwrap();

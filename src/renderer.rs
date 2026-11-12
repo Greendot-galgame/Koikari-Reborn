@@ -12,6 +12,16 @@ const CACHE_LIMIT: usize = 160 * 1024 * 1024;
 const TEXTURE_LIMIT: usize = 256 * 1024 * 1024;
 const DECODE_LIMIT: usize = 128 * 1024 * 1024;
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum TextureKey {
+    Asset(String),
+    Composite(Vec<String>),
+}
+struct DrawLayer {
+    layer: Layer,
+    key: TextureKey,
+}
+
 struct Cached {
     frames: Vec<([u32; 4], Texture)>,
     animation: Option<AtlasAnimation>,
@@ -42,7 +52,7 @@ pub struct Renderer {
     composition: RenderPipelineState,
     canvases: [Texture; 2],
     white: Texture,
-    cache: HashMap<String, Cached>,
+    cache: HashMap<TextureKey, Cached>,
     clock: u64,
 }
 
@@ -142,7 +152,7 @@ impl Renderer {
 
     fn evict(
         &mut self,
-        active: &HashSet<String>,
+        active: &HashSet<TextureKey>,
         incoming: usize,
         limit: usize,
     ) -> Result<(), String> {
@@ -168,11 +178,12 @@ impl Renderer {
         &mut self,
         store: &Store,
         name: &str,
-        active: &HashSet<String>,
+        active: &HashSet<TextureKey>,
         initial: Option<[u32; 4]>,
         allow_asd: bool,
     ) -> Result<(), String> {
-        if let Some(c) = self.cache.get_mut(name) {
+        let key = TextureKey::Asset(name.into());
+        if let Some(c) = self.cache.get_mut(&key) {
             if c.animation.is_some() && initial.is_none() {
                 return Err("ASD requires explicit atlas_start clip rectangle".into());
             }
@@ -181,7 +192,7 @@ impl Renderer {
                 return Ok(());
             }
         }
-        self.cache.remove(name);
+        self.cache.remove(&key);
         let bytes = store.bytes(name).map_err(|e| e.to_string())?;
         let (width, height) = image::ImageReader::new(Cursor::new(&bytes))
             .with_guessed_format()
@@ -259,7 +270,7 @@ impl Renderer {
             frames.push((rect, tex));
         }
         self.cache.insert(
-            name.into(),
+            key,
             Cached {
                 frames,
                 animation,
@@ -272,11 +283,160 @@ impl Renderer {
         Ok(())
     }
 
+    fn draw_quad(
+        encoder: &RenderCommandEncoderRef,
+        tex: &TextureRef,
+        rect: [f32; 4],
+        opacity: f32,
+        premultiplied: bool,
+        style: &Style,
+    ) {
+        let uniform = [
+            rect,
+            [
+                opacity.clamp(0.0, 1.0),
+                if style.grayscale { 1.0 } else { 0.0 },
+                if premultiplied { 1.0 } else { 0.0 },
+                0.0,
+            ],
+            [style.gamma[0], style.gamma[1], style.gamma[2], 0.0],
+            [style.floor[0], style.floor[1], style.floor[2], 0.0],
+            [style.ceiling[0], style.ceiling[1], style.ceiling[2], 0.0],
+            style.tint,
+        ];
+        encoder.set_vertex_bytes(
+            0,
+            std::mem::size_of_val(&uniform) as u64,
+            uniform.as_ptr().cast(),
+        );
+        encoder.set_fragment_bytes(
+            0,
+            std::mem::size_of_val(&uniform) as u64,
+            uniform.as_ptr().cast(),
+        );
+        encoder.set_fragment_texture(0, Some(tex));
+        encoder.draw_primitives(MTLPrimitiveType::TriangleStrip, 0, 4);
+    }
+
+    fn prepare_layers(
+        &mut self,
+        command: &CommandBufferRef,
+        layers: &[Layer],
+        active: &mut HashSet<TextureKey>,
+    ) -> Result<Vec<DrawLayer>, String> {
+        let mut result = Vec::new();
+        let mut start = 0;
+        while start < layers.len() {
+            let first = &layers[start];
+            let end = start
+                + layers[start..]
+                    .iter()
+                    .take_while(|l| l.group == first.group)
+                    .count();
+            let group = &layers[start..end];
+            let base = &self.cache[&TextureKey::Asset(first.asset.clone())];
+            let [width, height] = base.source_size;
+            let scale = [first.width / width as f32, first.height / height as f32];
+            let composable = first.group != 0
+                && group.len() > 1
+                && scale.iter().all(|s| s.is_finite() && *s > 0.0)
+                && group.iter().all(|l| {
+                    let source = &self.cache[&TextureKey::Asset(l.asset.clone())];
+                    source.animation.is_none()
+                        && source.source_size[0] <= width
+                        && source.source_size[1] <= height
+                        && l.x == first.x
+                        && l.y == first.y
+                        && l.opacity == first.opacity
+                        && (l.width - source.source_size[0] as f32 * scale[0]).abs() < 0.01
+                        && (l.height - source.source_size[1] as f32 * scale[1]).abs() < 0.01
+                });
+            if composable {
+                // Composite native cutouts before any subpixel motion or scaling.
+                let key = TextureKey::Composite(group.iter().map(|l| l.asset.clone()).collect());
+                active.insert(key.clone());
+                if let Some(cached) = self.cache.get_mut(&key) {
+                    cached.used = self.clock;
+                } else {
+                    let bytes = width as usize * height as usize * 4;
+                    self.evict(active, bytes, TEXTURE_LIMIT)?;
+                    let tex = texture(
+                        &self.device,
+                        width,
+                        height,
+                        MTLPixelFormat::BGRA8Unorm,
+                        true,
+                    );
+                    let pass = RenderPassDescriptor::new();
+                    let color = pass
+                        .color_attachments()
+                        .object_at(0)
+                        .ok_or("no Metal attachment")?;
+                    color.set_texture(Some(&tex));
+                    color.set_load_action(MTLLoadAction::Clear);
+                    color.set_store_action(MTLStoreAction::Store);
+                    color.set_clear_color(MTLClearColor::new(0.0, 0.0, 0.0, 0.0));
+                    let encoder = command.new_render_command_encoder(pass);
+                    encoder.set_render_pipeline_state(&self.pipeline);
+                    encoder.set_viewport(MTLViewport {
+                        originX: 0.0,
+                        originY: 0.0,
+                        width: width as f64,
+                        height: height as f64,
+                        znear: 0.0,
+                        zfar: 1.0,
+                    });
+                    for l in group {
+                        let source = &self.cache[&TextureKey::Asset(l.asset.clone())];
+                        let (image, _) = source.frame(0);
+                        Self::draw_quad(
+                            encoder,
+                            image,
+                            [
+                                -1.0,
+                                1.0,
+                                source.source_size[0] as f32 / width as f32 * 2.0,
+                                source.source_size[1] as f32 / height as f32 * 2.0,
+                            ],
+                            1.0,
+                            false,
+                            &Style::default(),
+                        );
+                    }
+                    encoder.end_encoding();
+                    let clip = [0, 0, width, height];
+                    self.cache.insert(
+                        key.clone(),
+                        Cached {
+                            frames: vec![(clip, tex)],
+                            animation: None,
+                            initial_clip: clip,
+                            source_size: [width, height],
+                            bytes,
+                            used: self.clock,
+                        },
+                    );
+                }
+                result.push(DrawLayer {
+                    layer: first.clone(),
+                    key,
+                });
+            } else {
+                result.extend(group.iter().map(|l| DrawLayer {
+                    layer: l.clone(),
+                    key: TextureKey::Asset(l.asset.clone()),
+                }));
+            }
+            start = end;
+        }
+        Ok(result)
+    }
+
     fn encode_layers(
         &self,
         command: &CommandBufferRef,
         target: &TextureRef,
-        layers: &[Layer],
+        layers: &[DrawLayer],
         styles: &BTreeMap<u32, Style>,
         frame: &Frame,
         elapsed: u64,
@@ -300,7 +460,7 @@ impl Renderer {
             znear: 0.0,
             zfar: 1.0,
         });
-        for l in layers {
+        for DrawLayer { layer: l, key } in layers {
             if ![l.x, l.y, l.width, l.height, l.opacity]
                 .iter()
                 .all(|v| v.is_finite())
@@ -310,7 +470,7 @@ impl Renderer {
                 encoder.end_encoding();
                 return Err("invalid layer geometry".into());
             }
-            let cached = self.cache.get(&l.asset).ok_or("texture was not loaded")?;
+            let cached = self.cache.get(key).ok_or("texture was not loaded")?;
             let (tex, clip) =
                 cached.frame(frame.atlas_times.get(&l.asset).copied().unwrap_or(elapsed));
             let mut width = l.width;
@@ -326,36 +486,19 @@ impl Renderer {
                 }
             }
             let style = styles.get(&l.group).cloned().unwrap_or_default();
-            let uniform = [
+            Self::draw_quad(
+                encoder,
+                tex,
                 [
                     l.x / WIDTH * 2.0 - 1.0,
                     1.0 - l.y / HEIGHT * 2.0,
                     width / WIDTH * 2.0,
                     height / HEIGHT * 2.0,
                 ],
-                [
-                    l.opacity.clamp(0.0, 1.0),
-                    if style.grayscale { 1.0 } else { 0.0 },
-                    0.0,
-                    0.0,
-                ],
-                [style.gamma[0], style.gamma[1], style.gamma[2], 0.0],
-                [style.floor[0], style.floor[1], style.floor[2], 0.0],
-                [style.ceiling[0], style.ceiling[1], style.ceiling[2], 0.0],
-                style.tint,
-            ];
-            encoder.set_vertex_bytes(
-                0,
-                std::mem::size_of_val(&uniform) as u64,
-                uniform.as_ptr().cast(),
+                l.opacity,
+                matches!(key, TextureKey::Composite(_)),
+                &style,
             );
-            encoder.set_fragment_bytes(
-                0,
-                std::mem::size_of_val(&uniform) as u64,
-                uniform.as_ptr().cast(),
-            );
-            encoder.set_fragment_texture(0, Some(tex));
-            encoder.draw_primitives(MTLPrimitiveType::TriangleStrip, 0, 4);
         }
         encoder.end_encoding();
         Ok(())
@@ -367,13 +510,28 @@ impl Renderer {
         store: &Store,
         target: &TextureRef,
     ) -> Result<CommandBuffer, String> {
+        let result = self.encode_frame(scene, store, target);
+        if result.is_err() {
+            self.cache.retain(|key, cached| {
+                !matches!(key, TextureKey::Composite(_)) || cached.used != self.clock
+            });
+        }
+        result
+    }
+
+    fn encode_frame(
+        &mut self,
+        scene: &Scene,
+        store: &Store,
+        target: &TextureRef,
+    ) -> Result<CommandBuffer, String> {
         let frame = animation::frame(scene)?;
         self.clock = self.clock.wrapping_add(1);
-        let mut active: HashSet<String> = frame
+        let mut active: HashSet<TextureKey> = frame
             .current
             .iter()
             .chain(&frame.previous)
-            .map(|l| l.asset.clone())
+            .map(|l| TextureKey::Asset(l.asset.clone()))
             .collect();
         let rule = if frame.kind == 1 && frame.progress < 1.0 {
             Some(
@@ -385,9 +543,12 @@ impl Renderer {
             None
         };
         if let Some(r) = &rule {
-            active.insert(r.clone());
+            active.insert(TextureKey::Asset(r.clone()));
         }
-        for name in &active {
+        for key in &active {
+            let TextureKey::Asset(name) = key else {
+                continue;
+            };
             self.load(
                 store,
                 name,
@@ -396,21 +557,27 @@ impl Renderer {
                 rule.as_ref() != Some(name),
             )?;
         }
+        let command = self.queue.new_command_buffer().to_owned();
+        let current = self.prepare_layers(&command, &frame.current, &mut active)?;
+        let previous = if frame.progress < 1.0 {
+            self.prepare_layers(&command, &frame.previous, &mut active)?
+        } else {
+            Vec::new()
+        };
         self.evict(&active, 0, CACHE_LIMIT)?;
-        let command = self.queue.new_command_buffer();
         self.encode_layers(
-            command,
+            &command,
             &self.canvases[1],
-            &frame.current,
+            &current,
             &frame.styles,
             &frame,
             scene.visual.elapsed_ms,
         )?;
         if frame.progress < 1.0 {
             self.encode_layers(
-                command,
+                &command,
                 &self.canvases[0],
-                &frame.previous,
+                &previous,
                 &frame.previous_styles,
                 &frame,
                 scene.visual.elapsed_ms,
@@ -468,14 +635,13 @@ impl Renderer {
         encoder.set_fragment_texture(1, Some(&self.canvases[1]));
         encoder.set_fragment_texture(
             2,
-            Some(
-                rule.as_ref()
-                    .map_or(&*self.white, |r| self.cache[r].frame(0).0),
-            ),
+            Some(rule.as_ref().map_or(&*self.white, |r| {
+                self.cache[&TextureKey::Asset(r.clone())].frame(0).0
+            })),
         );
         encoder.draw_primitives(MTLPrimitiveType::TriangleStrip, 0, 4);
         encoder.end_encoding();
-        Ok(command.to_owned())
+        Ok(command)
     }
 
     /// Render to a caller-owned BGRA8 texture and wait for completion. This is
