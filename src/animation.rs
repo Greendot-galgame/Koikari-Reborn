@@ -1139,13 +1139,11 @@ fn execute(
                     clip[i] = n as u32;
                 }
                 r.atlas_clips.insert(asset.clone(), clip);
-            } else {
-                if let Some(start) = r.atlas_starts.remove(asset) {
-                    r.atlas_paused
-                        .insert(asset.clone(), now.saturating_sub(start));
-                } else if !r.atlas_paused.contains_key(asset) {
-                    return Err("atlas_stop requires a started atlas".into());
-                }
+            } else if let Some(start) = r.atlas_starts.remove(asset) {
+                r.atlas_paused
+                    .insert(asset.clone(), now.saturating_sub(start));
+            } else if !r.atlas_paused.contains_key(asset) {
+                return Err("atlas_stop requires a started atlas".into());
             }
         }
         _ => return Ok(Outcome::Unhandled),
@@ -1189,6 +1187,7 @@ pub fn layers(scene: &Scene) -> Vec<Layer> {
         .map(|r| evaluated(scene, &r))
         .unwrap_or_default()
 }
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub(crate) struct Frame {
     pub current: Vec<Layer>,
     pub previous: Vec<Layer>,
@@ -1202,6 +1201,7 @@ pub(crate) struct Frame {
     pub atlas_times: BTreeMap<String, u64>,
     pub atlas_clips: BTreeMap<String, [u32; 4]>,
 }
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub(crate) fn frame(scene: &Scene) -> Result<Frame, String> {
     let r = read(scene)?;
     let current = evaluated(scene, &r);

@@ -31,6 +31,7 @@ fn all_effective_entries_pass_strict_archive_integrity() {
     );
 }
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 #[test]
 #[ignore = "requires user-owned XP3; validates the actual native message-layer ABI"]
 fn message_glyph_uses_verified_base_and_sheet_geometry() {
@@ -105,6 +106,28 @@ fn next_page(engine: &mut Engine) {
         }
     }
     panic!("page continuation exceeded budget");
+}
+
+#[test]
+#[ignore = "requires user-owned XP3; reported character pages do not retain stale shaking"]
+fn reported_character_pages_do_not_inherit_previous_dialogue_motions() {
+    let mut engine = Engine::open(store()).unwrap();
+    engine.start().unwrap();
+    let mut checked = 0;
+    while engine.state.pages <= 345 {
+        if [217, 345].contains(&engine.state.pages) {
+            let mut scene = engine.state.scene.clone();
+            koikari_reborn::animation::tick(&mut scene, 5000);
+            let settled = koikari_reborn::animation::layers(&scene);
+            for milliseconds in [7, 13, 29, 53] {
+                koikari_reborn::animation::tick(&mut scene, milliseconds);
+                assert_eq!(koikari_reborn::animation::layers(&scene), settled);
+            }
+            checked += 1;
+        }
+        next_page(&mut engine);
+    }
+    assert_eq!(checked, 2);
 }
 
 #[test]
@@ -326,4 +349,60 @@ fn real_metal_shader_compiles() {
     unsafe {
         koikari_reborn::renderer::Renderer::new(layer.as_ptr().cast()).unwrap();
     }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "requires user-owned XP3 and Metal; station closeup texture-budget regression"]
+fn reported_station_closeup_stays_within_texture_budget() {
+    use koikari_reborn::renderer::Renderer;
+    use metal::*;
+    let assets = store();
+    let mut engine = Engine::open(assets.clone()).unwrap();
+    let device = Device::system_default().expect("Metal GPU required");
+    let mut renderer = Renderer::for_device(device.clone()).unwrap();
+    let descriptor = TextureDescriptor::new();
+    descriptor.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+    descriptor.set_width(1280);
+    descriptor.set_height(720);
+    descriptor.set_usage(MTLTextureUsage::RenderTarget);
+    let target = device.new_texture(&descriptor);
+    engine.start().unwrap();
+    let mut rendered = 0;
+    while engine.state.pages <= 1825 {
+        if engine.state.pages >= 1800 {
+            let scene = &engine.state.scene;
+            renderer
+                .render_to_texture(scene, &assets, &target)
+                .unwrap_or_else(|error| {
+                    let sizes: Vec<_> = scene
+                        .layers
+                        .iter()
+                        .chain(&scene.visual.previous)
+                        .map(|l| {
+                            let reader = image::ImageReader::new(std::io::Cursor::new(
+                                assets.bytes(&l.asset).unwrap(),
+                            ))
+                            .with_guessed_format()
+                            .unwrap();
+                            (&l.asset, l.group, reader.into_dimensions().unwrap())
+                        })
+                        .collect();
+                    panic!(
+                        "page {}: {error}; textures {sizes:?}; resident {:?}",
+                        engine.state.pages,
+                        renderer.cache_usage()
+                    );
+                });
+            assert!(renderer.cache_usage().0 <= 256 * 1024 * 1024);
+            assert!(renderer.peak_texture_bytes() <= 256 * 1024 * 1024);
+            rendered += 1;
+        }
+        step(&mut engine);
+    }
+    assert!(rendered >= 26);
+    println!(
+        "{rendered} station frames rendered; peak reserved GPU asset bytes: {}",
+        renderer.peak_texture_bytes()
+    );
 }

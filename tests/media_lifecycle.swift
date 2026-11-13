@@ -20,6 +20,21 @@
     policy.setBlocked(false)
     expect(policy.permitsPlayback, "Closing an ordinary modal may resume")
 
+    policy.setApplicationActive(false)
+    expect(!policy.permitsPlayback, "Visible scene pauses when another macOS app takes focus")
+    policy.setForeground(false)
+    policy.setForeground(true)
+    expect(!policy.permitsPlayback, "Scene activation cannot override application focus loss")
+    policy.setBlocked(true)
+    policy.setBlocked(false)
+    expect(!policy.permitsPlayback, "Closing a modal cannot override application focus loss")
+    policy.loseOutputRoute()
+    expect(!policy.requestUserResume(), "Inactive application cannot bank playback consent")
+    policy.setApplicationActive(true)
+    expect(!policy.permitsPlayback, "Application activation preserves the explicit resume latch")
+    expect(policy.requestUserResume(), "Focused application may request explicit resume")
+    expect(policy.permitsPlayback, "Focused unblocked scene resumes after consent")
+
     policy.endInterruption(shouldResume: false)
     expect(
       policy.requiresUserResume, "A denied end is safe even if the begin notification was missed")
@@ -109,32 +124,35 @@
     expect(!policy.permitsPlayback, "Failed retry re-latches instead of leaking playback")
     expect(policy.requestUserResume(), "Another retry requires another explicit action")
 
-    // Exhaustive gate matrix: scene × modal/error/import × interruption × consent.
+    // Exhaustive gate matrix: scene × app focus × blockers × interruption × consent.
     // The same gate is injected into GameVideoView and guards audio/clock/EOF drain.
     for foreground in [false, true] {
-      for blocked in [false, true] {
-        for interrupted in [false, true] {
-          for needsConsent in [false, true] {
-            var candidate = MediaLifecyclePolicy()
-            candidate.setForeground(foreground)
-            candidate.setBlocked(blocked)
-            if interrupted { candidate.beginInterruption() }
-            if needsConsent { candidate.loseOutputRoute() }
-            let eligible = foreground && !blocked && !interrupted
-            expect(
-              candidate.permitsPlayback == (eligible && !needsConsent), "Combined playback gate")
-            expect(
-              candidate.canRequestUserResume == (eligible && needsConsent),
-              "Combined explicit-resume gate")
-            expect(
-              candidate.requestUserResume() == (eligible && needsConsent),
-              "Only eligible fresh action consumes consent")
-            expect(
-              candidate.requiresUserResume == (needsConsent && !eligible),
-              "Rejected action preserves consent latch")
-            expect(
-              candidate.permitsPlayback == eligible,
-              "Explicit resume cannot bypass any remaining gate")
+      for applicationActive in [false, true] {
+        for blocked in [false, true] {
+          for interrupted in [false, true] {
+            for needsConsent in [false, true] {
+              var candidate = MediaLifecyclePolicy()
+              candidate.setForeground(foreground)
+              candidate.setApplicationActive(applicationActive)
+              candidate.setBlocked(blocked)
+              if interrupted { candidate.beginInterruption() }
+              if needsConsent { candidate.loseOutputRoute() }
+              let eligible = foreground && applicationActive && !blocked && !interrupted
+              expect(
+                candidate.permitsPlayback == (eligible && !needsConsent), "Combined playback gate")
+              expect(
+                candidate.canRequestUserResume == (eligible && needsConsent),
+                "Combined explicit-resume gate")
+              expect(
+                candidate.requestUserResume() == (eligible && needsConsent),
+                "Only eligible fresh action consumes consent")
+              expect(
+                candidate.requiresUserResume == (needsConsent && !eligible),
+                "Rejected action preserves consent latch")
+              expect(
+                candidate.permitsPlayback == eligible,
+                "Explicit resume cannot bypass any remaining gate")
+            }
           }
         }
       }

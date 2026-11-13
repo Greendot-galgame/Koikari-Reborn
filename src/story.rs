@@ -486,11 +486,11 @@ impl Engine {
             }
         }
         for (selection, id) in &state.flow.selected {
-            if !self
+            if self
                 .database
                 .selections
                 .get(*selection)
-                .is_some_and(|s| *id < s.text.len())
+                .is_none_or(|s| *id >= s.text.len())
             {
                 return Err("saved selected branch out of bounds".into());
             }
@@ -796,6 +796,15 @@ impl Engine {
         }
         if !self.state.flow.page_open {
             self.checkpoint();
+            // The source [c] macro stops motions after its input wait.
+            let previous = self.state.cursor.token.checked_sub(1);
+            let program = self.program(&self.state.cursor.script.clone())?;
+            if previous
+                .and_then(|index| program.get(index))
+                .is_some_and(|token| matches!(&token.kind, Kind::Tag { name, .. } if name.eq_ignore_ascii_case("c")))
+            {
+                self.visual("motion_stop", &BTreeMap::new(), None)?;
+            }
             self.state.scene.text.clear();
             self.state.scene.speaker.clear();
             self.state.scene.voice.asset.clear();
@@ -1427,9 +1436,7 @@ impl Engine {
         self.state.scene.layers.retain(|layer| {
             layer.group != number
                 && (sprite.position != "fc"
-                    || !sprites
-                        .get(&layer.group)
-                        .is_some_and(|s| s.position == "fc"))
+                    || sprites.get(&layer.group).is_none_or(|s| s.position != "fc"))
         });
         if sprite.position == "fc" {
             self.state.sprites.retain(|_, s| s.position != "fc");
