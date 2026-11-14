@@ -451,6 +451,44 @@ pub unsafe extern "C" fn kr_gallery(handle: *mut Host) -> *mut c_char {
         ))
     })
 }
+/// Read encoded bytes for a currently unlocked gallery entry, without decoding
+/// or changing the gallery preview, story, progress, or saves.
+/// # Safety
+/// Supply a live exclusive main-thread handle, a valid UTF-8 gallery entry ID
+/// C string, and a writable length pointer. Free returned bytes exactly once
+/// with kr_bytes_free and the original length. Failure returns null and zero
+/// length (when nonnull), with details available through kr_error.
+#[no_mangle]
+pub unsafe extern "C" fn kr_gallery_image(
+    handle: *mut Host,
+    id: *const c_char,
+    length: *mut usize,
+) -> *mut u8 {
+    run(|| {
+        if length.is_null() {
+            return Err("null gallery image length pointer".into());
+        }
+        *length = 0;
+        let h = host(handle)?;
+        let id = string(id)?;
+        let entry = h
+            .engine
+            .gallery()?
+            .into_iter()
+            .find(|entry| entry.id == id && entry.unlocked)
+            .ok_or("CG is locked or unknown")?;
+        let mut bytes = h
+            .engine
+            .assets
+            .bytes_limited(&entry.asset, 32 * 1024 * 1024)
+            .map_err(|e| e.to_string())?
+            .into_boxed_slice();
+        *length = bytes.len();
+        let pointer = bytes.as_mut_ptr();
+        std::mem::forget(bytes);
+        Ok(pointer)
+    })
+}
 /// # Safety
 /// Live exclusive main-thread handle. Returned JSON must be freed.
 #[no_mangle]
@@ -697,6 +735,41 @@ pub unsafe extern "C" fn kr_asset(
         Ok(pointer)
     })
 }
+/// Read one of the two optional title decorations without changing gameplay state.
+/// # Safety
+/// Supply a live exclusive main-thread handle, valid UTF-8 C string and writable
+/// length pointer. Free returned bytes with kr_bytes_free and the original length.
+#[no_mangle]
+pub unsafe extern "C" fn kr_ui_asset(
+    handle: *mut Host,
+    name: *const c_char,
+    length: *mut usize,
+) -> *mut u8 {
+    run(|| {
+        if length.is_null() {
+            return Err("null UI asset length pointer".into());
+        }
+        *length = 0;
+        let h = host(handle)?;
+        let name = string(name)?;
+        if !matches!(
+            name.as_str(),
+            "ui/title/TI_base_0.webp" | "ui/title/TI_タイトルロゴ.webp"
+        ) {
+            return Err("unsupported UI asset name".into());
+        }
+        let mut bytes = h
+            .engine
+            .assets
+            .bytes_limited(&name, 8 * 1024 * 1024)
+            .map_err(|e| e.to_string())?
+            .into_boxed_slice();
+        *length = bytes.len();
+        let pointer = bytes.as_mut_ptr();
+        std::mem::forget(bytes);
+        Ok(pointer)
+    })
+}
 /// Independent of handles; may run on an audio worker thread.
 /// # Safety
 /// Bytes must reference length readable bytes; output_length must be writable.
@@ -722,7 +795,7 @@ pub unsafe extern "C" fn kr_decode_audio(
     })
 }
 /// # Safety
-/// Pass null or a kr_audio allocation with its original length, exactly once.
+/// Pass null or a bridge byte allocation with its original length, exactly once.
 #[no_mangle]
 pub unsafe extern "C" fn kr_bytes_free(pointer: *mut u8, length: usize) {
     if !pointer.is_null() {

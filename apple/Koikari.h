@@ -23,6 +23,12 @@ typedef struct VideoExport VideoExport;
 VideoExport *kr_video_request(Host *handle);
 char *kr_video_export(VideoExport *request);
 char *kr_gallery(Host *handle);
+// Exclusive main-thread Host; id is a gallery ENTRY ID, never an asset filename.
+// Rechecks the current unlocked entry; returns encoded bytes, at most 32 MiB
+// decompressed, without decoding or changing preview, story, progress, or saves.
+// Free success exactly once with kr_bytes_free(bytes, original length).
+// Failure: NULL, zero length (if nonnull), kr_error. length must be writable.
+uint8_t *kr_gallery_image(Host *handle, const char *id, size_t *length);
 char *kr_replays(Host *handle);
 // Preview only an unlocked CG, composed by the Rust Metal renderer.
 int32_t kr_gallery_show(Host *handle, const char *id);
@@ -30,6 +36,10 @@ int32_t kr_gallery_hide(Host *handle);
 int32_t kr_draw(Host *handle, void *metal_layer, float width, float height);
 uint8_t *kr_audio(Host *handle, const char *name, size_t *length);
 uint8_t *kr_asset(Host *handle, const char *name, size_t *length);
+// Main-thread-only optional decorations: exactly ui/title/TI_base_0.webp or
+// ui/title/TI_タイトルロゴ.webp, at most 8 MiB decompressed. No gameplay changes.
+// Owned bytes: kr_bytes_free(bytes, length). Failure: NULL, zero length, kr_error.
+uint8_t *kr_ui_asset(Host *handle, const char *name, size_t *length);
 // Pure decoder, no handle; may be used from background workers.
 uint8_t *kr_decode_audio(const uint8_t *bytes, size_t length, size_t *output_length);
 void kr_bytes_free(uint8_t *bytes, size_t length);

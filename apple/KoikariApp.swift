@@ -180,13 +180,29 @@ struct AudioFailurePolicy {
 
 @MainActor final class Game: ObservableObject {
   @Published var snapshot: Snapshot?
-  @Published var error: String? { didSet { reconcileMediaPlayback() } }
-  @Published var importing = false { didSet { reconcileMediaPlayback() } }
+  @Published var error: String? {
+    didSet {
+      if error != nil { revealInterface() }
+      reconcileMediaPlayback()
+    }
+  }
+  @Published var importing = false {
+    didSet {
+      if importing { revealInterface() }
+      reconcileMediaPlayback()
+    }
+  }
   @Published var hasSave = false
   @Published var slots: [SaveSlot] = []
   @Published var timeline: [PastPage] = []
   @Published var fastForward = false
-  @Published var modalOpen = false { didSet { reconcileMediaPlayback() } }
+  @Published private(set) var interfaceHidden = false
+  @Published var modalOpen = false {
+    didSet {
+      if modalOpen { revealInterface() }
+      reconcileMediaPlayback()
+    }
+  }
   @Published private(set) var mediaPolicy = MediaLifecyclePolicy()
   var mediaPlaybackAllowed: Bool { mediaPolicy.permitsPlayback && active }
   var canResumeMedia: Bool { mediaPolicy.canRequestUserResume }
@@ -199,6 +215,8 @@ struct AudioFailurePolicy {
   }
   @Published var gallery: [CollectionEntry] = []
   @Published var replays: [CollectionEntry] = []
+  @Published private(set) var collectionGeneration = UUID()
+  private let galleryThumbnails = GameGalleryThumbnails()
   @Published var videoURL: URL?
   @Published var videoIdentity = UUID()
   private var exportedVideo: VideoClip?
@@ -214,6 +232,7 @@ struct AudioFailurePolicy {
   private var audioFailures = AudioFailurePolicy()
   private var failedAudioClip: (clip: Clip, channel: String)?
   @Published private(set) var audioOutputError: String?
+  @Published private(set) var originalUI = OriginalUIArtwork()
   private(set) var creditImages: [String: Image] = [:]
   private(set) var messageGlyph: MessageGlyphState?
   private(set) var messageGlyphSheet: Image?
@@ -221,15 +240,48 @@ struct AudioFailurePolicy {
   private var pendingVideoCompletion: UInt64?
   var choices: [StoryChoice] { snapshot?.flow?.choices ?? [] }
   var canAdvance: Bool {
-    guard active, !modalOpen, !importing, error == nil, let state = snapshot else { return false }
+    guard active, !interfaceHidden, !modalOpen, !importing, error == nil, let state = snapshot
+    else {
+      return false
+    }
     return !state.title && !state.finished && state.blocked == nil && choices.isEmpty
       && state.scene.video == nil
       && (state.flow?.acceptsAdvanceWait ?? true)
   }
   var canChoose: Bool {
-    guard active, !modalOpen, !importing, error == nil, let state = snapshot else { return false }
+    guard active, !interfaceHidden, !modalOpen, !importing, error == nil, let state = snapshot
+    else {
+      return false
+    }
     return !state.title && !state.finished && state.blocked == nil && state.scene.video == nil
       && (state.flow?.waitMs ?? 0) == 0
+  }
+  var canHideInterface: Bool {
+    ReadingEligibility(
+      active: active, hasScene: snapshot != nil, title: snapshot?.title ?? true,
+      finished: snapshot?.finished ?? false, blocked: snapshot?.blocked != nil,
+      messageVisible: snapshot?.scene.messageVisible ?? false, hasChoices: !choices.isEmpty,
+      hasVideo: snapshot?.scene.video != nil, hasCredits: snapshot?.scene.credits != nil,
+      hasInterlude: snapshot?.interlude != nil, waiting: (snapshot?.flow?.waitMs ?? 0) != 0,
+      modalOpen: modalOpen, importing: importing, hasError: error != nil
+    ).canHide
+  }
+  func hideInterface() {
+    stopFastForward()
+    guard canHideInterface else { return }
+    interfaceHidden = true
+    lastFrame = nil
+    clockRemainder = 0
+  }
+  func revealInterface() {
+    guard interfaceHidden else { return }
+    interfaceHidden = false
+    lastFrame = nil
+    clockRemainder = 0
+  }
+  func stopReadingMode() {
+    stopFastForward()
+    revealInterface()
   }
   private var fastTask: Task<Void, Never>?
   @Published var notice: String?
@@ -257,6 +309,19 @@ struct AudioFailurePolicy {
   }
   @Published var textScale = Game.preference("textScale", fallback: 1, range: 0.8...1.6) {
     didSet { UserDefaults.standard.set(textScale, forKey: "textScale") }
+  }
+  @Published var dialogueOpacity = Game.preference(
+    "dialogueOpacity", fallback: 0.9, range: 0.65...1)
+  {
+    didSet { UserDefaults.standard.set(dialogueOpacity, forKey: "dialogueOpacity") }
+  }
+  @Published var dialogueLineSpacing = Game.preference(
+    "dialogueLineSpacing", fallback: 5, range: 2...12)
+  {
+    didSet { UserDefaults.standard.set(dialogueLineSpacing, forKey: "dialogueLineSpacing") }
+  }
+  @Published var showPageNumber = UserDefaults.standard.bool(forKey: "showPageNumber") {
+    didSet { UserDefaults.standard.set(showPageNumber, forKey: "showPageNumber") }
   }
   @Published var muted = UserDefaults.standard.bool(forKey: "muted")
   var handle: OpaquePointer?
@@ -305,8 +370,10 @@ struct AudioFailurePolicy {
       mediaPolicy.setApplicationActive(NSApplication.shared.isActive)
       escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
         let handled = MainActor.assumeIsolated {
-          guard event.keyCode == 53, let self, self.fastForward else { return false }
-          self.stopFastForward()
+          guard event.keyCode == 53, let self, self.fastForward || self.interfaceHidden else {
+            return false
+          }
+          self.stopReadingMode()
           return true
         }
         return handled ? nil : event
@@ -374,6 +441,9 @@ struct AudioFailurePolicy {
       return false
     }
     stopFastForward()
+    clearGalleryThumbnails()
+    gallery.removeAll()
+    replays.removeAll()
     if let old = handle { kr_close(old) }
     stopAudio()
     cache.removeAll()
@@ -384,6 +454,15 @@ struct AudioFailurePolicy {
     audioFailures = AudioFailurePolicy()
     failedAudioClip = nil
     handle = next
+    // Main-thread-only handle use; replace the entire decoration set on reconnect.
+    // Artwork failure is nonfatal and visibly falls back to native controls.
+    originalUI = OriginalUIArtwork.load { name in
+      var count = 0
+      guard let bytes = name.withCString({ kr_ui_asset(next, $0, &count) }) else { return nil }
+      defer { kr_bytes_free(bytes, count) }
+      guard count > 0, count <= OriginalUIArtwork.byteLimit else { return nil }
+      return Data(bytes: bytes, count: count)
+    }
     lastFrame = nil
     exportedVideo = nil
     videoURL = nil
@@ -399,6 +478,8 @@ struct AudioFailurePolicy {
         location == AssetLocation.documentIdentifier
         ? "已直接载入 GameResources 中的资源，不创建额外副本。"
         : "当前使用以前导入的资源；原资源和存档已保留。"
+    #else
+      resourceStatus = "已载入所选文件夹中的资源；直接只读访问，不创建额外副本。"
     #endif
     return true
   }
@@ -518,6 +599,12 @@ struct AudioFailurePolicy {
     if action != "advance" { stopFastForward() }
     if action == "advance", !canAdvance { return false }
     if action.hasPrefix("choose:"), !canChoose { return false }
+    if action == "title" || action == "new" || action == "continue" || action == "load"
+      || action.hasPrefix("load:") || action == "back" || action.hasPrefix("rewind:")
+      || action.hasPrefix("replay:")
+    {
+      revealInterface()
+    }
     let ok = action.withCString { kr_action(handle, $0) } != 0
     if action == "title" || action == "new" { renderFailed = false }
     if !ok {
@@ -544,8 +631,15 @@ struct AudioFailurePolicy {
     return ok
   }
   func next() {
-    guard !modalOpen, !importing, error == nil else { return }
-    if fastForward { stopFastForward() } else { action("advance") }
+    switch ReadingInputPolicy.nextIntent(
+      interfaceHidden: interfaceHidden, fastForward: fastForward,
+      blocked: modalOpen || importing || error != nil || !active, canAdvance: canAdvance)
+    {
+    case .none: return
+    case .reveal: stopReadingMode()
+    case .stopFastForward: stopFastForward()
+    case .advance: action("advance")
+    }
   }
   func toggleFastForward() {
     if fastForward {
@@ -589,6 +683,7 @@ struct AudioFailurePolicy {
     do {
       let data = Data(String(cString: json).utf8)
       snapshot = try JSONDecoder().decode(Snapshot.self, from: data)
+      if !canHideInterface { revealInterface() }
       if messageGlyph == nil, snapshot?.title == false {
         guard let json = kr_message_glyph(handle) else {
           error = "阅读标记加载失败：\(rustError())"
@@ -723,12 +818,39 @@ struct AudioFailurePolicy {
     do {
       let entries = try JSONDecoder().decode(
         [CollectionEntry].self, from: Data(String(cString: json).utf8))
+      clearGalleryThumbnails()
       if replay { replays = entries } else { gallery = entries }
       return true
     } catch {
       self.error = "鉴赏列表读取失败：\(error.localizedDescription)"
       return false
     }
+  }
+  // Reads owned bytes on the main actor; the bounded thumbnail worker decodes off-thread.
+  // Neither thumbnails nor their failures invoke a story action or change the CG preview.
+  func galleryThumbnail(_ entry: CollectionEntry) async -> Image? {
+    guard entry.unlocked, gallery.contains(where: { $0.id == entry.id && $0.unlocked }) else {
+      return nil
+    }
+    let generation = collectionGeneration
+    let image = await galleryThumbnails.image(for: entry.id) { [weak self] in
+      guard let self, self.collectionGeneration == generation, let handle = self.handle,
+        self.gallery.contains(where: { $0.id == entry.id && $0.unlocked })
+      else { return nil }
+      var count = 0
+      guard let bytes = entry.id.withCString({ kr_gallery_image(handle, $0, &count) }) else {
+        return nil
+      }
+      defer { kr_bytes_free(bytes, count) }
+      guard count > 0, count <= 32 * 1024 * 1024 else { return nil }
+      return Data(bytes: bytes, count: count)
+    }
+    guard !Task.isCancelled, collectionGeneration == generation else { return nil }
+    return image
+  }
+  func clearGalleryThumbnails() {
+    galleryThumbnails.clear()
+    collectionGeneration = UUID()
   }
   func showCG(_ entry: CollectionEntry) -> Bool {
     guard entry.unlocked, let handle else { return false }
@@ -1063,6 +1185,7 @@ struct AudioFailurePolicy {
     resumePendingVideo()
   }
   private func suspendAudio(deactivateSession: Bool = true) {
+    revealInterface()
     guard active else { return }
     active = false
     lastFrame = nil
@@ -1095,7 +1218,10 @@ struct AudioFailurePolicy {
     else { return }
     let now = CACurrentMediaTime()
     defer { lastFrame = now }
-    if mediaPlaybackAllowed, let previous = lastFrame {
+    if ReadingInputPolicy.permitsStoryTick(
+      mediaPlaybackAllowed: mediaPlaybackAllowed, interfaceHidden: interfaceHidden),
+      let previous = lastFrame
+    {
       let elapsed = min(1000, max(0, (now - previous) * 1000) + clockRemainder)
       let milliseconds = UInt64(elapsed)
       clockRemainder = elapsed - Double(milliseconds)
@@ -1180,86 +1306,17 @@ struct Content: View {
   @State private var showCollection = false
   @State private var collectionIsReplay = false
   @Environment(\.scenePhase) private var phase
+  @ScaledMetric(relativeTo: .body) private var readingTypeSize: CGFloat = 18
   private var title: Bool { game.snapshot?.title ?? true }
   var body: some View {
     VStack(spacing: 0) {
-      ViewThatFits(in: .horizontal) {
-        HStack(spacing: 14) {
-          Text("KOIKARI / REBORN").font(.system(size: 12, weight: .semibold, design: .monospaced))
-          Spacer()
-          if !title {
-            Button("上一句") { game.action("back") }.disabled(game.timeline.isEmpty)
-              .keyboardShortcut(.leftArrow, modifiers: []).accessibilityIdentifier("back")
-            Button(game.fastForward ? "停止快进" : "快进") { game.toggleFastForward() }
-              .disabled(!game.fastForward && !game.canAdvance)
-              .keyboardShortcut("f", modifiers: []).accessibilityIdentifier("fast-forward")
-            Button("存档") {
-              saving = true
-              game.reloadSaves()
-              showSaves = true
-            }
-            .keyboardShortcut("s", modifiers: .command).accessibilityIdentifier("save")
-            Button("读档") {
-              saving = false
-              game.reloadSaves()
-              showSaves = true
-            }
-            .accessibilityIdentifier("load")
-            Button("回看") { showHistory = true }
-            Button("标题") { returnToTitle = true }
-          }
-          Button(game.muted ? "取消静音" : "静音") { game.toggleMute() }
-          Button("设置") { showSettings = true }.accessibilityIdentifier("settings")
-          Menu("更多") {
-            Button("重播语音") { game.replayVoice() }.disabled(
-              game.snapshot?.scene.voice.asset.isEmpty ?? true)
-            Button("兼容状态") { showDiagnostics = true }
-            Button("CG 鉴赏") { openCollection(replay: false) }.disabled(game.handle == nil)
-            Button("场景回想") { openCollection(replay: true) }.disabled(game.handle == nil)
-            #if os(macOS)
-              Button("切换全屏") { NSApp.keyWindow?.toggleFullScreen(nil) }
-                .keyboardShortcut("f", modifiers: [.command, .control])
-            #endif
-          }
-        }
-        HStack {
-          Text("KOIKARI").font(.system(size: 12, weight: .semibold, design: .monospaced))
-          Spacer()
-          if !title {
-            Button(game.fastForward ? "停止快进" : "下一句") { game.next() }
-              .disabled(!game.fastForward && !game.canAdvance).accessibilityIdentifier(
-                "advance-compact")
-          }
-          Menu("游戏") {
-            if !title {
-              Button("上一句") { game.action("back") }.disabled(game.timeline.isEmpty)
-              Button(game.fastForward ? "停止快进" : "快进") { game.toggleFastForward() }
-                .disabled(!game.fastForward && !game.canAdvance)
-              Button("存档") {
-                saving = true
-                game.reloadSaves()
-                showSaves = true
-              }
-              Button("读档") {
-                saving = false
-                game.reloadSaves()
-                showSaves = true
-              }
-              Button("回看") { showHistory = true }
-              Button("返回标题") { returnToTitle = true }
-            }
-            Button("CG 鉴赏") { openCollection(replay: false) }.disabled(game.handle == nil)
-            Button("场景回想") { openCollection(replay: true) }.disabled(game.handle == nil)
-            Button("重播语音") { game.replayVoice() }.disabled(
-              game.snapshot?.scene.voice.asset.isEmpty ?? true)
-            Button(game.muted ? "取消静音" : "静音") { game.toggleMute() }
-            Button("设置") { showSettings = true }
-            Button("兼容状态") { showDiagnostics = true }
-          }.accessibilityIdentifier("compact-game-menu")
-        }
-      }.font(.system(size: 13)).padding(.horizontal, 16).frame(height: 44).background(
-        Color(red: 0.06, green: 0.08, blue: 0.13)
-      ).disabled(game.importing || game.modalOpen).zIndex(1)
+      if !title {
+        readingToolbar
+          .opacity(game.interfaceHidden ? 0 : 1)
+          .disabled(game.interfaceHidden)
+          .allowsHitTesting(!game.interfaceHidden)
+          .accessibilityHidden(game.interfaceHidden)
+      }
       GeometryReader { geometry in
         let width = min(geometry.size.width, geometry.size.height * 16 / 9)
         let height = width * 9 / 16
@@ -1272,94 +1329,100 @@ struct Content: View {
               if !title && !game.importing { game.next() }
             }
           if title {
-            VStack(spacing: max(6, height * 0.025)) {
-              Text("租借男友").font(.system(size: max(24, height * 0.085), weight: .light))
-              Text("Rust + Metal · 原生运行时").font(.system(size: 12)).foregroundStyle(.secondary)
-              if game.handle != nil {
-                Button("新游戏") {
-                  if game.hasSave { newGame = true } else { game.action("new") }
-                }.accessibilityIdentifier("new-game")
-                Button("继续游戏") { game.action("continue") }.disabled(!game.hasSave)
-                  .accessibilityIdentifier("continue")
-                Button("存档管理") {
-                  saving = false
-                  game.reloadSaves()
-                  showSaves = true
-                }
-                HStack {
-                  Button("CG 鉴赏") { openCollection(replay: false) }
-                  Button("场景回想") { openCollection(replay: true) }
-                }
-              }
-              #if os(macOS)
-                Button(game.handle == nil ? "导入 XP3 所在文件夹" : "更换资源文件夹") { importing = true }
-                  .accessibilityIdentifier("import-assets")
-              #else
-                Button("重新检查资源") { game.reloadDocumentResources() }
-                  .accessibilityIdentifier("reload-resources")
-                Text("文件 → 我的 iPad/iPhone → 本应用 → GameResources")
-                  .font(.system(size: 11)).multilineTextAlignment(.center)
-                Text(game.resourceStatus).font(.system(size: 11)).foregroundStyle(.secondary)
-                  .multilineTextAlignment(.center)
-              #endif
-              Text("本地 data.xp3，可附加 adult.xp3 / patch*.xp3 · 不加载 Windows / Steam")
-                .font(.system(size: 10)).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            }
-            .buttonStyle(.borderedProminent).tint(Color(red: 0.21, green: 0.35, blue: 0.48))
-            .padding(max(12, height * 0.04)).background(
-              .ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18)
+            GameTitleScreen(
+              game: game,
+              startNew: {
+                if game.hasSave { newGame = true } else { game.action("new") }
+              },
+              resume: { game.action("continue") },
+              openSaves: { openSaves(saving: false) },
+              openCollection: { openCollection(replay: $0) },
+              openResources: {
+                #if os(macOS)
+                  importing = true
+                #else
+                  game.reloadDocumentResources()
+                #endif
+              },
+              openSettings: { showSettings = true }
             )
-            .frame(maxWidth: min(520, width * 0.9)).position(
-              x: geometry.size.width / 2, y: geometry.size.height / 2)
+            .disabled(game.importing || game.modalOpen)
           } else if let state = game.snapshot {
             if let credits = state.scene.credits {
               CreditsView(credits: credits, images: game.creditImages)
                 .frame(width: width, height: height)
                 .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
             }
-            if state.scene.messageVisible && state.scene.video == nil && !state.finished {
+            if state.scene.messageVisible && state.scene.video == nil && !state.finished
+              && !game.interfaceHidden
+            {
               let portraitWidth =
                 state.sprites.values.contains { $0.position == "fc" } ? width * 0.20 : 0
-              let panelHeight = min(height * 0.6, max(110, height * 0.32 * CGFloat(game.textScale)))
-              VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                  Text(state.scene.speaker).font(
-                    .system(size: max(14, height * 0.031), weight: .semibold))
-                  Spacer()
-                  Text("\(state.pages)").font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
+              let panelHeight = ReadingLayout.panelHeight(
+                sceneHeight: height, availableHeight: geometry.size.height,
+                compact: width < 700, textScale: game.textScale,
+                typeScale: readingTypeSize / 18)
+              GameReadingPanel(
+                speaker: state.scene.speaker, text: state.scene.text, page: state.pages,
+                textScale: game.textScale, backgroundOpacity: game.dialogueOpacity,
+                lineSpacing: game.dialogueLineSpacing, showPageNumber: game.showPageNumber
+              ) {
+                if let glyph = game.messageGlyph, let sheet = game.messageGlyphSheet {
+                  MessageGlyphView(
+                    glyph: glyph, sheet: sheet, elapsed: state.scene.visual.elapsedMs
+                  ).accessibilityHidden(true)
                 }
-                ScrollView {
-                  Text(state.scene.text).font(
-                    .system(size: max(14, height * 0.032) * CGFloat(game.textScale))
-                  ).lineSpacing(3)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }.id("\(state.pages)-\(state.scene.text)").frame(maxHeight: .infinity)
-                HStack {
-                  Button("上一句") { game.action("back") }.disabled(game.timeline.isEmpty)
-                  Spacer()
-                  if let glyph = game.messageGlyph, let sheet = game.messageGlyphSheet {
-                    MessageGlyphView(
-                      glyph: glyph, sheet: sheet, elapsed: state.scene.visual.elapsedMs)
-                  }
-                  Button("下一句  ›") { game.next() }.disabled(!game.canAdvance)
-                    .keyboardShortcut(.space, modifiers: []).accessibilityIdentifier("advance")
+                Button {
+                  game.action("back")
+                } label: {
+                  Label("上一句", systemImage: "chevron.left").labelStyle(.iconOnly)
                 }
+                .buttonStyle(.bordered).controlSize(.large).disabled(game.timeline.isEmpty)
+                .keyboardShortcut(.leftArrow, modifiers: [])
+                .accessibilityIdentifier("back").help("上一句（左方向键）")
+                Button {
+                  game.next()
+                } label: {
+                  Label(
+                    game.fastForward ? "停止快进" : "下一句",
+                    systemImage: game.fastForward ? "stop.fill" : "chevron.right"
+                  )
+                  .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.bordered).controlSize(.large).disabled(
+                  !game.fastForward && !game.canAdvance
+                )
+                .keyboardShortcut(.space, modifiers: [])
+                .accessibilityIdentifier("advance").help("下一句（空格 / 右方向键）")
               }
+              .frame(height: panelHeight)
               .padding(.leading, portraitWidth)
-              .padding(max(10, height * 0.02)).frame(
-                width: width * 0.94, height: panelHeight, alignment: .leading
-              )
-              .background {
-                RoundedRectangle(cornerRadius: 12)
-                  .fill(Color(red: 0.04, green: 0.06, blue: 0.12).opacity(0.90))
-                  .padding(.leading, portraitWidth)
-              }
+              .frame(width: width * 0.94)
               .position(
                 x: geometry.size.width / 2,
-                y: top + height - panelHeight / 2 - height * 0.02
+                y: min(
+                  geometry.size.height - panelHeight / 2 - 8,
+                  max(panelHeight / 2 + 8, top + height - panelHeight / 2 - height * 0.02))
               )
-              .accessibilityElement(children: .contain)
+              .disabled(game.modalOpen || game.importing || game.error != nil)
+            }
+            if game.interfaceHidden {
+              VStack {
+                Spacer()
+                HStack {
+                  Spacer()
+                  Button {
+                    game.next()
+                  } label: {
+                    Label("显示界面", systemImage: "eye")
+                  }
+                  .buttonStyle(.bordered).controlSize(.large)
+                  .keyboardShortcut(.space, modifiers: [])
+                  .accessibilityIdentifier("reveal-interface")
+                  .accessibilityHint("只恢复界面，不推进剧情；也可点击画面恢复")
+                  .help("点击画面、空格或右方向键只恢复界面，不翻页")
+                }
+              }.padding(16)
             }
             if state.interlude != nil && game.choices.isEmpty && state.scene.video == nil {
               VStack {
@@ -1369,13 +1432,14 @@ struct Content: View {
                   .keyboardShortcut(.space, modifiers: []).accessibilityIdentifier(
                     "continue-interlude"
                   )
-                  .padding(12).background(.regularMaterial, in: Capsule()).padding(16)
+                  .buttonStyle(.borderedProminent).controlSize(.large).padding(16)
               }
             }
             if !game.choices.isEmpty {
-              Color.black.opacity(0.35).contentShape(Rectangle()).onTapGesture {}
+              GameTheme.text.opacity(0.18).contentShape(Rectangle()).onTapGesture {}
               VStack(spacing: 14) {
-                Text("请选择").font(.headline)
+                Label("做出你的选择", systemImage: "sparkles")
+                  .font(.system(.headline, design: .rounded)).foregroundStyle(GameTheme.accent)
                 ScrollView {
                   VStack(spacing: 12) {
                     ForEach(game.choices) { choice in
@@ -1384,14 +1448,14 @@ struct Content: View {
                       } label: {
                         Text(choice.text).font(.system(size: 17 * game.textScale))
                           .multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(10)
-                      }.buttonStyle(.borderedProminent)
+                      }.buttonStyle(.borderedProminent).controlSize(.large)
                         .disabled(!choice.enabled || !game.canChoose)
                         .accessibilityIdentifier("choice-\(choice.id)")
                     }
                   }
                 }
               }.padding(24).frame(width: min(620, width * 0.88), height: min(450, height * 0.85))
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+                .modifier(GamePanelStyle())
             }
             if let video = state.scene.video {
               let playbackIdentity = game.videoIdentity
@@ -1414,14 +1478,14 @@ struct Content: View {
                 .environment(\.scenePhase, game.mediaPlaybackAllowed ? phase : .inactive)
                 .allowsHitTesting(game.mediaPlaybackAllowed)
               } else {
-                ProgressView("正在准备视频…")
+                ProgressView("正在准备视频…").foregroundStyle(.white).tint(.white)
               }
             }
             if state.finished {
-              Color.black.opacity(0.65).contentShape(Rectangle()).onTapGesture {}
+              GameTheme.background.opacity(0.85).contentShape(Rectangle()).onTapGesture {}
               VStack(spacing: 18) {
                 if let ending = state.flow?.ending {
-                  Text("故事结束").font(.largeTitle)
+                  Text("故事结束").font(.system(.largeTitle, design: .rounded, weight: .bold))
                   Text(ending).font(.headline).multilineTextAlignment(.center)
                     .accessibilityIdentifier("ending-id")
                   if state.flow?.replay == true { Text("回想播放结束").foregroundStyle(.secondary) }
@@ -1432,40 +1496,42 @@ struct Content: View {
                   Text("运行时未返回结局标识，请查看兼容状态。").font(.callout)
                 }
                 Button("返回标题") { returnToTitle = true }
-              }.padding(30).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+              }.buttonStyle(.bordered).controlSize(.large).padding(30).modifier(GamePanelStyle())
             }
             if state.blocked != nil {
-              Text("遇到未支持指令，已停止执行。请查看兼容状态。").font(.caption).padding().background(.red.opacity(0.8))
+              Text("遇到未支持指令，已停止执行。请查看兼容状态。").font(.caption).padding()
+                .foregroundStyle(.white).background(GameTheme.accent)
                 .frame(maxHeight: .infinity, alignment: .top)
             }
           }
           if game.importing {
-            Color.black.opacity(0.8)
+            GameTheme.background.opacity(0.96)
             VStack(spacing: 12) {
               Text("正在导入资源，请保持应用打开")
               ProgressView(value: game.importProgress)
               Text(game.importDetail).font(.caption).foregroundStyle(.secondary)
               Button("取消导入") { game.cancelImport() }.accessibilityIdentifier("cancel-import")
             }.padding(24).frame(width: min(340, geometry.size.width * 0.8))
-              .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+              .modifier(GamePanelStyle())
           }
           if game.audioOutputError != nil {
             Button("音频输出已暂停 · 恢复选项") { game.showAudioOutputRecovery() }
-              .padding(12).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+              .padding(12).modifier(GamePanelStyle())
               .frame(maxHeight: .infinity, alignment: .top).padding(.top, 12)
           } else if game.mediaPolicy.requiresUserResume {
             VStack(spacing: 8) {
               Text(game.mediaPauseMessage).font(.callout).multilineTextAlignment(.center)
               Button("恢复音视频") { game.resumeMediaByUser() }
                 .disabled(!game.canResumeMedia).accessibilityIdentifier("resume-media")
-            }.padding(16).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }.padding(16).modifier(GamePanelStyle())
               .frame(maxWidth: min(420, geometry.size.width * 0.9))
               .frame(maxHeight: .infinity, alignment: .top).padding(.top, 12)
           }
         }
       }.clipped()
     }
-    .foregroundStyle(.white).preferredColorScheme(.dark)
+    .foregroundStyle(GameTheme.text).tint(GameTheme.accent)
+    .background(GameTheme.background).preferredColorScheme(.light)
     .overlay(alignment: .top) {
       if let text = game.saveWarning ?? game.notice {
         Text(text).font(.caption).padding(10).background(.regularMaterial, in: Capsule())
@@ -1599,269 +1665,122 @@ struct Content: View {
       }
     #endif
   }
+  private var readingToolbar: some View {
+    ViewThatFits(in: .horizontal) {
+      toolbarContent(showBrand: true)
+      toolbarContent(showBrand: false)
+    }
+    .padding(.horizontal, 12).padding(.vertical, 4)
+    .background(GameTheme.background)
+    .overlay(alignment: .bottom) { GameTheme.border.frame(height: 1) }
+    .disabled(game.importing || game.modalOpen || game.error != nil)
+    .zIndex(1)
+  }
+
+  private func toolbarContent(showBrand: Bool) -> some View {
+    HStack(spacing: 8) {
+      if showBrand {
+        Text("Koikari").font(.caption).foregroundStyle(.secondary).accessibilityHidden(true)
+      }
+      Spacer(minLength: 8)
+      Button {
+        showHistory = true
+      } label: {
+        Label("回看", systemImage: "text.alignleft")
+          .labelStyle(GameToolbarLabelStyle(compact: !showBrand))
+      }.buttonStyle(.bordered).controlSize(.large).accessibilityIdentifier("backlog")
+        .accessibilityLabel("回看")
+      Button {
+        game.toggleFastForward()
+      } label: {
+        Label(
+          game.fastForward ? "快进中 · 停止" : "快进",
+          systemImage: game.fastForward ? "stop.fill" : "forward.end"
+        )
+        .labelStyle(GameToolbarLabelStyle(compact: !showBrand))
+      }
+      .accessibilityLabel(game.fastForward ? "快进中，停止快进" : "快进")
+      .buttonStyle(.bordered).controlSize(.large)
+      .disabled(!game.fastForward && !game.canAdvance)
+      .keyboardShortcut("f", modifiers: []).accessibilityIdentifier("fast-forward")
+      Button {
+        game.hideInterface()
+      } label: {
+        Label("隐藏界面", systemImage: "eye.slash").labelStyle(.iconOnly)
+      }
+      .buttonStyle(.bordered).controlSize(.large).disabled(!game.canHideInterface)
+      .accessibilityIdentifier("hide-interface")
+      .help("隐藏界面欣赏画面；再次点击只恢复界面，不翻页")
+      Menu {
+        Button {
+          openSaves(saving: true)
+        } label: {
+          Label("存档", systemImage: "square.and.arrow.down")
+        }
+        .keyboardShortcut("s", modifiers: .command).accessibilityIdentifier("save")
+        Button {
+          openSaves(saving: false)
+        } label: {
+          Label("读档", systemImage: "tray.and.arrow.up")
+        }
+        .accessibilityIdentifier("load")
+        Divider()
+        Button {
+          game.replayVoice()
+        } label: {
+          Label("重播语音", systemImage: "speaker.wave.2")
+        }
+        .disabled(game.snapshot?.scene.voice.asset.isEmpty ?? true)
+        Button {
+          game.toggleMute()
+        } label: {
+          Label(
+            game.muted ? "取消静音" : "静音", systemImage: game.muted ? "speaker.wave.2" : "speaker.slash"
+          )
+        }
+        Button {
+          showSettings = true
+        } label: {
+          Label("设置", systemImage: "slider.horizontal.3")
+        }
+        .accessibilityIdentifier("settings")
+        Divider()
+        Button("CG 鉴赏") { openCollection(replay: false) }.disabled(game.handle == nil)
+        Button("场景回想") { openCollection(replay: true) }.disabled(game.handle == nil)
+        Button("兼容状态") { showDiagnostics = true }
+        #if os(macOS)
+          Button("切换全屏") { NSApp.keyWindow?.toggleFullScreen(nil) }
+            .keyboardShortcut("f", modifiers: [.command, .control])
+        #endif
+        Divider()
+        Button {
+          returnToTitle = true
+        } label: {
+          Label("返回标题", systemImage: "house")
+        }
+      } label: {
+        Label("菜单", systemImage: "line.3.horizontal")
+          .labelStyle(GameToolbarLabelStyle(compact: !showBrand))
+          .font(.callout.weight(.medium)).padding(.horizontal, 12).frame(minHeight: 44)
+      }
+      .menuStyle(.automatic)
+      .fixedSize()
+      .accessibilityIdentifier("compact-game-menu").accessibilityLabel("游戏菜单")
+    }
+  }
+
+  private func openSaves(saving: Bool) {
+    self.saving = saving
+    game.reloadSaves()
+    showSaves = true
+  }
+
   private func openCollection(replay: Bool) {
     collectionIsReplay = replay
     if game.reloadCollection(replay: replay) { showCollection = true }
   }
   private func document(_ title: String, text: String, close: @escaping () -> Void) -> some View {
-    VStack(alignment: .leading, spacing: 18) {
-      HStack {
-        Text(title).font(.headline)
-        Spacer()
-        Button("关闭", action: close)
-      }
-      ScrollView {
-        Text(text).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
-      }
-    }.padding(24).frame(minWidth: 300, idealWidth: 650, minHeight: 250, idealHeight: 450)
-      .preferredColorScheme(.dark)
-  }
-}
-
-struct CollectionMenu: View {
-  @ObservedObject var game: Game
-  let replay: Bool
-  @Environment(\.dismiss) private var dismiss
-  @State private var selected: CollectionEntry?
-  @State private var confirmReplay = false
-  private var entries: [CollectionEntry] { replay ? game.replays : game.gallery }
-  var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      HStack {
-        Text(replay ? "场景回想" : "CG 鉴赏").font(.headline)
-        Spacer()
-        Text("\(entries.filter { $0.unlocked }.count) / \(entries.count)").foregroundStyle(
-          .secondary)
-        Button("关闭") {
-          game.hideCG()
-          dismiss()
-        }
-      }
-      if selected != nil && !replay {
-        MetalCanvas(game: game).aspectRatio(16 / 9, contentMode: .fit)
-          .accessibilityIdentifier("gallery-preview")
-        Button("返回列表") {
-          game.hideCG()
-          selected = nil
-        }
-      } else if entries.isEmpty {
-        Text("暂无可显示条目。解锁进度随剧情推进保存。").foregroundStyle(.secondary)
-      } else {
-        ScrollView {
-          LazyVStack(spacing: 10) {
-            ForEach(entries) { entry in
-              Button {
-                if replay {
-                  selected = entry
-                  confirmReplay = true
-                } else if game.showCG(entry) {
-                  selected = entry
-                }
-              } label: {
-                HStack {
-                  Image(systemName: entry.unlocked ? (replay ? "play.circle" : "photo") : "lock")
-                  Text(entry.unlocked ? entry.title : "尚未解锁").multilineTextAlignment(.leading)
-                  Spacer()
-                }.padding(12).frame(maxWidth: .infinity)
-              }.buttonStyle(.bordered).disabled(!entry.unlocked)
-                .accessibilityIdentifier("\(replay ? "replay" : "cg")-\(entry.id)")
-            }
-          }
-        }
-      }
-      Spacer(minLength: 0)
-    }.padding(24).frame(minWidth: 300, idealWidth: 720, minHeight: 300, idealHeight: 560)
-      .preferredColorScheme(.dark)
-      .onDisappear { game.hideCG() }
-      .confirmationDialog(
-        "开始回想？当前自动进度会更新，手动存档保留。", isPresented: $confirmReplay, titleVisibility: .visible
-      ) {
-        Button("开始回想") {
-          if let selected, game.action("replay:\(selected.id)") { dismiss() }
-        }
-        Button("取消", role: .cancel) { selected = nil }
-      }
-  }
-}
-
-struct Backlog: View {
-  @ObservedObject var game: Game
-  @Environment(\.dismiss) private var dismiss
-  @State private var pending: PastPage?
-  @State private var confirm = false
-  @State private var fullHistory = false
-  var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      HStack {
-        Text("回看与回溯（最近 100 页）").font(.headline)
-        Spacer()
-        Button("关闭") { dismiss() }
-      }
-      Text("点击记录可回到当时画面与对白；自动进度会更新，手动槽位不变。读档后也可回溯。")
-        .font(.caption).foregroundStyle(.secondary)
-      if game.timeline.isEmpty { Text("还没有可回溯的页面。") }
-      ScrollViewReader { proxy in
-        ScrollView {
-          LazyVStack(alignment: .leading, spacing: 14) {
-            ForEach(game.timeline) { page in
-              Button {
-                pending = page
-                confirm = true
-              } label: {
-                VStack(alignment: .leading, spacing: 4) {
-                  Text("第 \(page.page) 页 · \(page.interlude ? "人物介绍" : page.speaker)").font(
-                    .caption
-                  ).foregroundStyle(.secondary)
-                  Text(page.interlude ? "回到人物介绍画面" : page.text).frame(
-                    maxWidth: .infinity, alignment: .leading)
-                  Text("回溯至此").font(.caption).foregroundStyle(.blue)
-                }.padding(10).background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
-              }.buttonStyle(.plain).id(page.id).accessibilityIdentifier("rewind-\(page.page)")
-            }
-          }
-        }.onAppear { if let last = game.timeline.last { proxy.scrollTo(last.id, anchor: .bottom) } }
-      }
-      Button("完整文字回看（最近 300 页）") { fullHistory = true }
-    }.padding(20).frame(minWidth: 300, idealWidth: 620, minHeight: 250, idealHeight: 520)
-      .preferredColorScheme(.dark)
-      .sheet(isPresented: $fullHistory) {
-        VStack(alignment: .leading, spacing: 12) {
-          HStack {
-            Text("完整文字回看").font(.headline)
-            Spacer()
-            Button("关闭") { fullHistory = false }
-          }
-          ScrollView {
-            Text(game.snapshot?.history.joined(separator: "\n\n") ?? "").frame(
-              maxWidth: .infinity, alignment: .leading
-            ).textSelection(.enabled)
-          }
-        }.padding(20).frame(minWidth: 300, idealWidth: 620, minHeight: 250, idealHeight: 520)
-          .preferredColorScheme(.dark)
-      }
-      .confirmationDialog(
-        "回到第 \(pending?.page ?? 0) 页？自动进度将更新，手动存档不变。", isPresented: $confirm,
-        titleVisibility: .visible
-      ) {
-        Button("确认回溯") { if let pending, game.action("rewind:\(pending.page)") { dismiss() } }
-        Button("取消", role: .cancel) {}
-      }
-  }
-}
-
-struct SaveManager: View {
-  @ObservedObject var game: Game
-  let saving: Bool
-  @Environment(\.dismiss) private var dismiss
-  @State private var pending: SaveSlot?
-  @State private var confirm = false
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      HStack {
-        Text(saving ? "保存进度" : "读取进度").font(.headline)
-        Spacer()
-        Button("关闭") { dismiss() }
-      }
-      Text("6 个手动槽位独立保存；自动进度随剧情更新，不覆盖手动槽位。")
-        .font(.caption).foregroundStyle(.secondary)
-      if let notice = game.notice { Text(notice).font(.caption).foregroundStyle(.green) }
-      ScrollView {
-        VStack(spacing: 12) {
-          ForEach(game.slots) { slot in
-            VStack(alignment: .leading, spacing: 6) {
-              HStack {
-                Text(slot.name).font(.headline)
-                Spacer()
-                if saving && slot.slot != 9 {
-                  Button("存入此槽") {
-                    if slot.exists {
-                      pending = slot
-                      confirm = true
-                    } else {
-                      game.action("save:\(slot.slot)")
-                    }
-                  }.disabled((game.snapshot?.title ?? true) || game.snapshot?.blocked != nil)
-                    .accessibilityIdentifier("save-slot-\(slot.slot)")
-                } else if !saving {
-                  Button("读取") {
-                    pending = slot
-                    confirm = true
-                  }
-                  .disabled(!slot.compatible).accessibilityIdentifier("load-slot-\(slot.slot)")
-                }
-              }
-              if slot.compatible {
-                Text(
-                  "第 \(slot.pages) 页 · \(Date(timeIntervalSince1970: Double(slot.savedAt) / 1000).formatted(date: .abbreviated, time: .shortened))"
-                )
-                .font(.caption).foregroundStyle(.secondary)
-                Text([slot.speaker, slot.text].filter { !$0.isEmpty }.joined(separator: "："))
-                  .font(.callout).lineLimit(3)
-              } else if slot.exists {
-                Text("存档不可用：\(slot.error ?? "校验失败")").font(.caption).foregroundStyle(.orange)
-              } else {
-                Text("空槽位").font(.caption).foregroundStyle(.secondary)
-              }
-            }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
-              .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
-          }
-        }
-      }
-    }.padding(20).frame(minWidth: 300, idealWidth: 620, minHeight: 250, idealHeight: 520)
-      .preferredColorScheme(.dark)
-      .confirmationDialog(
-        saving ? "覆盖\(pending?.name ?? "此槽位")？" : "读取\(pending?.name ?? "此进度")？当前自动进度将随之更新。",
-        isPresented: $confirm, titleVisibility: .visible
-      ) {
-        Button(saving ? "确认覆盖" : "确认读取", role: saving ? .destructive : nil) {
-          if let pending, game.action("\(saving ? "save" : "load"):\(pending.slot)"), !saving {
-            dismiss()
-          }
-        }
-        Button("取消", role: .cancel) {}
-      }
-  }
-}
-
-struct Settings: View {
-  @ObservedObject var game: Game
-  @Environment(\.dismiss) private var dismiss
-  var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      HStack {
-        Text("阅读与声音").font(.headline)
-        Spacer()
-        Button("关闭") { dismiss() }
-      }
-      ScrollView {
-        VStack(alignment: .leading, spacing: 14) {
-          Text("对白字号：\(Int(game.textScale * 100))%")
-          Slider(value: $game.textScale, in: 0.8...1.6, step: 0.1).accessibilityIdentifier(
-            "text-scale")
-          Text("示例：这是一段中文对白。").font(.system(size: 16 * game.textScale))
-          Text("音乐音量：\(Int(game.bgmVolume * 100))%")
-          Slider(value: $game.bgmVolume, in: 0...1).accessibilityIdentifier("bgm-volume")
-          Text("语音音量：\(Int(game.voiceVolume * 100))%")
-          Slider(value: $game.voiceVolume, in: 0...1).accessibilityIdentifier("voice-volume")
-          Text("音效音量：\(Int(game.seVolume * 100))%")
-          Slider(value: $game.seVolume, in: 0...1).accessibilityIdentifier("se-volume")
-          Toggle(
-            "全部静音",
-            isOn: Binding(get: { game.muted }, set: { if $0 != game.muted { game.toggleMute() } }))
-          Button("恢复默认设置") {
-            game.textScale = 1
-            game.bgmVolume = 0.35
-            game.voiceVolume = 1
-            game.seVolume = 0.7
-            if game.muted { game.toggleMute() }
-          }
-          Text("设置自动保存。快进遇到选项、视频或结局会停止。")
-            .font(.caption).foregroundStyle(.secondary)
-        }
-      }
-    }.padding(24).frame(minWidth: 300, idealWidth: 560, minHeight: 250, idealHeight: 480)
-      .preferredColorScheme(.dark)
+    GameDocumentSheet(title: title, text: text, close: close)
   }
 }
 
@@ -1879,7 +1798,11 @@ struct Settings: View {
       .commands {
         CommandMenu("剧情") {
           Button("下一句") { game.next() }.keyboardShortcut(.rightArrow, modifiers: [])
-          Button("停止快进") { game.stopFastForward() }.keyboardShortcut(.escape, modifiers: [])
+          .disabled(
+            game.modalOpen || game.importing || game.error != nil
+              || (!game.interfaceHidden && !game.fastForward && !game.canAdvance))
+          Button("停止快进或显示界面") { game.stopReadingMode() }.keyboardShortcut(.escape, modifiers: [])
+          .disabled(!game.interfaceHidden && !game.fastForward)
         }
       }
     #endif

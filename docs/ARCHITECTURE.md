@@ -33,6 +33,11 @@ flowchart LR
 | `src/coverage.rs` | 使用实际 Engine API 的有限预算路线遍历 |
 | `src/ffi.rs`, `apple/Koikari.h` | Rust/native 所有权和调用边界 |
 | `apple/KoikariApp.swift` | UI、输入、快进、原生播放器与统一恢复策略 |
+| [GameUI.swift](../apple/GameUI.swift)、[TitleScreen.swift](../apple/TitleScreen.swift)、[SettingsView.swift](../apple/SettingsView.swift) | 统一主题、共享对白组件、标题/资源引导和设置预览；视图不直接操作 Rust 状态 |
+| [GameMenus.swift](../apple/GameMenus.swift) | 共享页头的存读档卡片、回看/完整文字切换、CG/回想网格及文档页；保留确认、禁用条件和原有引擎命令，预览可独立渲染真实视图 |
+| [GalleryThumbnails.swift](../apple/GalleryThumbnails.swift) | 仅处理独立图片字节，不持有 Host；主线程按需取数据、后台串行解码、重复请求合并与有界 LRU；资源切换/关闭清理队列与缓存，视图另用代际标记拒绝旧图片 |
+| [ReadingPolicy.swift](../apple/ReadingPolicy.swift) | 可无资源测试的隐藏界面资格、输入意图和阅读布局；隐藏不修改引擎的消息可见性 |
+| [OriginalUI.swift](../apple/OriginalUI.swift) | 从当前连接的 Store 加载两个可选标题图片；FFI 名称白名单与解压后 8 MiB 上限，ImageIO 解码前检查单帧、边长 4096 和 4M 像素上限；连接切换替换整组图片，无素材时回退原生 UI |
 | `apple/GameVideo.swift`, `CreditsView.swift` | 原生视频生命周期及片尾显示 |
 | `apple/AssetImport.swift`, `AssetLocation.swift` | 可取消导入、相对资源标识及旧路径迁移 |
 
@@ -45,6 +50,12 @@ flowchart LR
 5. **媒体失败有明确语义。** 资源损坏按片段 Skip/Retry；输出设备失败按全局恢复处理。静音/零音量不启动播放器，不伪造解码成功。
 6. **回调绑定身份。** 过期音视频回调不得影响新的片段，播放失败不能当作 EOF。
 7. **进度来自真实执行。** 回溯丢弃未来分支，但不会撤销已自然获得的 CG/回想；新游戏和标题不清空同指纹全局进度。
+
+## CG 缩略图边界
+
+`kr_gallery_image` 只接受当前图库中真实已解锁的条目 ID，每次重新解析代表图片，不接受调用者给定的资源路径。Store 在读取前限制解压后资产为 32 MiB，保留补丁优先级、保护标志和校验失败拒绝；返回字节使用原始长度释放。该接口不绘图、不切换图库预览，也不执行剧情或保存进度。
+
+Swift 的按需读取闭包只在主线程执行；复制后的独立数据才交给后台解码。ImageIO 解码前限制单帧、边长 8192、16M 像素；缩略图按完整画面和方向信息缩至最长边 384，不裁切。缓存最多 32 项且按真实行字节数计费不超过 16 MiB，视图离屏释放显示图片；这些是局部预算，不代表原生界面、ImageIO 临时缓冲及 GPU 的总内存上限。清理期间已经开始的同步解码可以完成，但旧结果不得回到新一代界面，也不得与后续解码重叠。
 
 ## 平台与限制
 

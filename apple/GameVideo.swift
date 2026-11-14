@@ -67,7 +67,7 @@ struct GameVideoView: View {
           Button("跳过影片") { playback.skip() }
             .accessibilityIdentifier("skip-video")
         }
-      }.padding(16)
+      }.buttonStyle(.bordered).controlSize(.large).padding(16)
     }
     .contentShape(Rectangle())
     .onTapGesture {}

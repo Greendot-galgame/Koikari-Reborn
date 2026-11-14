@@ -419,6 +419,14 @@ impl Store {
         }
         Err(Error::Missing(name.to_owned()))
     }
+    /// Reject oversized decompressed entries before reading or allocating their contents.
+    pub fn bytes_limited(&self, name: &str, limit: u64) -> Result<Vec<u8>> {
+        let (archive, entry) = self.resolve(name)?;
+        if entry.size > limit {
+            return Err(invalid("asset exceeds requested byte limit"));
+        }
+        archive.read(entry)
+    }
     pub fn text(&self, name: &str) -> Result<String> {
         let bytes = self.bytes(name)?;
         if bytes.starts_with(&[0xff, 0xfe]) {
