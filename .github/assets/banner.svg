@@ -1,24 +1,117 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="320" viewBox="0 0 1280 320" role="img" aria-labelledby="title desc">
-  <title id="title">Koikari Reborn — Rust × Metal</title>
-  <desc id="desc">An independent visual novel runtime for macOS, iPhone and iPad. Bring your own legally obtained game resources.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="440" viewBox="0 0 1440 440" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">Koikari Reborn — 让恋爱故事，在 Apple 设备上继续</title>
+  <desc id="desc">A pink and violet banner for the independent Koikari visual novel runtime. Original vector artwork combines a love letter, hearts and a dialogue card. Built with Rust and Metal for macOS, iPhone and iPad.</desc>
+
   <defs>
-    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#10242c"/><stop offset="1" stop-color="#193a43"/></linearGradient>
-    <linearGradient id="accent"><stop stop-color="#8ad3ba"/><stop offset="1" stop-color="#d2dba8"/></linearGradient>
+    <linearGradient id="background" x1="0" y1="80" x2="1440" y2="360" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F4F8FF"/>
+      <stop offset=".35" stop-color="#FFF7FB"/>
+      <stop offset=".7" stop-color="#FFF9EE"/>
+      <stop offset="1" stop-color="#F4F4FF"/>
+    </linearGradient>
+    <linearGradient id="letter" x1="987" y1="161" x2="1229" y2="285" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8856BA"/>
+      <stop offset="1" stop-color="#6D3194"/>
+    </linearGradient>
+    <linearGradient id="heart" x1="1129" y1="115" x2="1197" y2="192" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F983B8"/>
+      <stop offset="1" stop-color="#E63C8B"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(1136 221) rotate(90) scale(203 258)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F4D5E9" stop-opacity=".8"/>
+      <stop offset="1" stop-color="#F4D5E9" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="banner-clip">
+      <rect width="1440" height="440" rx="24"/>
+    </clipPath>
+    <filter id="card-shadow" x="-25%" y="-30%" width="160%" height="185%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="12" stdDeviation="12" flood-color="#69417C" flood-opacity=".1"/>
+    </filter>
   </defs>
-  <rect width="1280" height="320" rx="24" fill="url(#bg)"/>
-  <path d="M980 0H1280V320H660Z" fill="#254b50" opacity=".45"/>
-  <path d="M1120 0H1280V320H800Z" fill="#386365" opacity=".35"/>
-  <rect x="58" y="56" width="6" height="208" rx="3" fill="url(#accent)"/>
-  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
-    <text x="90" y="90" fill="#9acbbc" font-size="17" letter-spacing="4">INDEPENDENT VISUAL NOVEL RUNTIME</text>
-    <text x="87" y="162" fill="#f3f5f1" font-size="58" font-weight="700">Koikari Reborn</text>
-    <text x="90" y="211" fill="#c1d5d1" font-size="25">Rust × Metal</text>
-    <text x="90" y="255" fill="#9dbcb6" font-size="18">macOS · iPhone · iPad  /  Bring your own resources</text>
+
+  <g clip-path="url(#banner-clip)">
+    <rect width="1440" height="440" fill="url(#background)"/>
+    <ellipse cx="1136" cy="221" rx="258" ry="203" fill="url(#glow)"/>
+
+    <!-- Soft geometric accents echo the game's pastel title screen. -->
+    <g aria-hidden="true">
+      <path d="M0 400L134 266M15 422L149 288" stroke="#FFFFFF" stroke-width="3"/>
+      <circle cx="1308" cy="72" r="110" stroke="#E9DDF4" stroke-opacity=".75" stroke-width="1.5"/>
+      <circle cx="1334" cy="383" r="60" stroke="#FFFFFF" stroke-width="2"/>
+      <path d="M767 64L792 76L771 91Z" fill="#F5DCE9" fill-opacity=".65"/>
+      <rect x="822" y="348" width="17" height="17" rx="3" transform="rotate(14 830.5 356.5)" fill="#E9E3FA"/>
+      <path d="M874 165H888M881 158V172" stroke="#D8C2E9" stroke-width="2" stroke-linecap="round"/>
+    </g>
+
+    <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Helvetica, Arial, sans-serif">
+      <!-- Identity and technology remain readable when the banner is scaled. -->
+      <path d="M75 71C75 66 81 64 84 68C87 64 93 66 93 71C93 76 84 82 84 82S75 76 75 71Z" fill="#E9569C"/>
+      <text x="108" y="80" font-size="14" font-weight="600" letter-spacing="2.6" fill="#8A619B">VISUAL NOVEL · RUST × METAL</text>
+
+      <text x="69" y="193" font-size="82" font-weight="700" letter-spacing="-3.8" fill="#60327E">Koikari<tspan dx="18" fill="#DC438D">Reborn</tspan></text>
+      <text x="75" y="247" font-size="25" letter-spacing="1" fill="#86738C">让恋爱故事，在 Apple 设备上继续。</text>
+
+      <path d="M75 290H129" stroke="#D7B7D6" stroke-width="2" stroke-linecap="round"/>
+
+      <g transform="translate(75 326)" stroke="#9D80AA" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect width="25" height="17" rx="3"/>
+        <path d="M12.5 17V23M6.5 23H18.5"/>
+      </g>
+      <text x="113" y="345" font-size="19" font-weight="500" fill="#785989">macOS</text>
+      <circle cx="201" cy="337" r="2" fill="#D8C5DD"/>
+
+      <g transform="translate(226 325)" stroke="#9D80AA" stroke-width="1.7" stroke-linecap="round" aria-hidden="true">
+        <rect width="14" height="24" rx="3.5"/>
+        <path d="M5 3H9M6 20.5H8"/>
+      </g>
+      <text x="254" y="345" font-size="19" font-weight="500" fill="#785989">iPhone</text>
+      <circle cx="343" cy="337" r="2" fill="#D8C5DD"/>
+
+      <g transform="translate(368 325)" stroke="#9D80AA" stroke-width="1.7" stroke-linecap="round" aria-hidden="true">
+        <rect width="19" height="24" rx="3.5"/>
+        <path d="M8 20.5H11"/>
+      </g>
+      <text x="401" y="345" font-size="19" font-weight="500" fill="#785989">iPad</text>
+
+      <!-- Original romance / visual-novel motifs, not extracted game artwork. -->
+      <g aria-hidden="true">
+        <rect x="1012" y="95" width="286" height="231" rx="19" transform="rotate(10 1155 210.5)" fill="#EAE1F4" stroke="#DFD1EC"/>
+        <g transform="rotate(-6 1103 217)" filter="url(#card-shadow)">
+          <rect x="931" y="94" width="344" height="244" rx="18" fill="#FFFDFE" stroke="#E5D7E9"/>
+          <circle cx="953" cy="115" r="3" fill="#E8A3C5"/>
+          <circle cx="965" cy="115" r="3" fill="#D2B5E3"/>
+          <circle cx="977" cy="115" r="3" fill="#E9DCEB"/>
+          <path d="M1223 115H1252" stroke="#E6D9EA" stroke-width="3" stroke-linecap="round"/>
+          <rect x="947" y="136" width="312" height="185" rx="11" fill="#FBF1F7"/>
+          <circle cx="1104" cy="225" r="76" fill="#F3E5F1"/>
+
+          <g transform="rotate(4 1104 227)">
+            <path d="M1003 186L1095 125C1101 121 1107 121 1113 125L1205 186V276H1003Z" fill="#D8C4EA"/>
+            <rect x="1022" y="151" width="164" height="113" rx="8" fill="#FFFDFE" stroke="#E7D9EA"/>
+            <path d="M1042 179H1112M1042 192H1165M1042 205H1145" stroke="#E9DCEB" stroke-width="4" stroke-linecap="round"/>
+            <path d="M1003 186L1104 242L1205 186V276C1205 281 1201 285 1196 285H1012C1007 285 1003 281 1003 276Z" fill="url(#letter)"/>
+            <path d="M1005 280L1075 226M1203 280L1133 226" stroke="#C29BDD" stroke-opacity=".65" stroke-width="1.5"/>
+            <path d="M1004 187L1100 242C1102 244 1106 244 1108 242L1204 187" stroke="#F0DFF8" stroke-width="2" stroke-linejoin="round"/>
+            <circle cx="1104" cy="244" r="16" fill="#F9DAEB"/>
+            <path d="M1096 242C1096 237 1101 236 1104 240C1107 236 1112 237 1112 242C1112 247 1104 252 1104 252S1096 247 1096 242Z" fill="#DF589B"/>
+          </g>
+
+          <path d="M1142 144C1135 126 1156 113 1170 129C1178 109 1203 113 1205 132C1208 151 1179 174 1179 174S1149 161 1142 144Z" fill="url(#heart)"/>
+          <path d="M968 200C966 193 975 188 980 195C984 188 993 191 993 198C993 207 982 216 982 216S970 207 968 200Z" fill="#F3AECF"/>
+        </g>
+
+        <g transform="rotate(-6 1140 327)" filter="url(#card-shadow)">
+          <rect x="962" y="285" width="356" height="87" rx="14" fill="#FFFEFF" stroke="#E5D5E8"/>
+          <rect x="983" y="301" width="40" height="5" rx="2.5" fill="#DEA3C9"/>
+          <text x="981" y="337" font-size="20" font-weight="500" fill="#805291">「下一句，会遇见谁？」</text>
+          <path d="M1284 333L1290 339L1284 345" stroke="#B479C1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </g>
+
+        <path d="M1307 214L1310 223L1319 226L1310 229L1307 238L1304 229L1295 226L1304 223Z" fill="#D9C0E8"/>
+        <circle cx="918" cy="287" r="4" fill="#E9B5D2"/>
+      </g>
+    </g>
   </g>
-  <g stroke="#9acbbc" stroke-width="2" fill="none" opacity=".75">
-    <rect x="968" y="72" width="190" height="124" rx="10"/>
-    <path d="M1038 196v28m-28 0h86"/>
-    <rect x="1109" y="140" width="53" height="91" rx="9" fill="#193a43"/>
-    <path d="M1127 150h17m-8 70h1"/>
-  </g>
+
+  <rect x=".5" y=".5" width="1439" height="439" rx="23.5" stroke="#EDE2EB"/>
 </svg>

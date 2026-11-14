@@ -193,6 +193,7 @@
 
   @main struct UIPreviewRenderer {
     @MainActor private static var renderCount = 0
+    @MainActor private static var onboardingLayoutChecks = 0
     @MainActor static func main() throws {
       let app = NSApplication.shared
       app.setActivationPolicy(.prohibited)
@@ -227,6 +228,10 @@
         ("title-ready-portrait", true, true, 390.0, 760.0),
         ("title-ready-accessibility", true, true, 667.0, 720.0),
         ("title-onboarding-compact", false, false, 667.0, 320.0),
+        ("title-onboarding-small-mac", false, false, 800.0, 466.0),
+        ("title-onboarding-portrait", false, false, 390.0, 760.0),
+        ("title-onboarding-accessibility", false, false, 390.0, 760.0),
+        ("title-onboarding-wide", false, false, 1600.0, 960.0),
       ] {
         let game = Game(ready: ready, saved: saved)
         if ready { game.originalUI = artwork }
@@ -236,6 +241,21 @@
         )
         .dynamicTypeSize(name.hasSuffix("accessibility") ? .accessibility2 : .large)
         try render(view, name: name, width: width, height: height, output: output)
+      }
+      for ready in [false, true] {
+        let game = Game(ready: ready, saved: false)
+        if ready {
+          game.originalUI.hasUnavailableArtwork = true
+          game.snapshot?.warnings = ["合成兼容提示：此处验证提示不会将主内容挤到窗口顶部。"]
+        } else {
+          game.error = "资源载入失败：请选择包含完整原作资源的文件夹。原存档未更改。"
+        }
+        try render(
+          GameTitleScreen(
+            game: game, startNew: {}, resume: {}, openSaves: {}, openCollection: { _ in },
+            openResources: {}, openSettings: {}),
+          name: ready ? "title-ready-notices" : "title-onboarding-error", width: 800,
+          height: 466, output: output)
       }
       let settings = Game(ready: true, saved: true)
       try render(
@@ -351,9 +371,41 @@
         .background(GameTheme.background)
         try render(panel, name: name, width: width + 40, height: height + 40, output: output)
       }
+      print("\(onboardingLayoutChecks) rendered onboarding bounds assertions passed")
       print(
         "Rendered \(renderCount) macOS SwiftUI visual fixtures; library images/data are synthetic; no engine, actual gameplay or iOS UI was exercised."
       )
+    }
+
+    @MainActor private static func verifyOnboardingBounds(
+      _ bitmap: NSBitmapImageRep, width: Double, height: Double, name: String
+    ) {
+      // Read the actual rendered white surface against its tinted canvas. The
+      // central scan lines cross the card, not the header control or its shadow.
+      let scaleX = Double(bitmap.pixelsWide) / width
+      let scaleY = Double(bitmap.pixelsHigh) / height
+      let expectedY = (height + (height < 500 ? 48 : 64)) / 2
+      func isSurface(_ x: Int, _ y: Int) -> Bool {
+        guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else {
+          return false
+        }
+        return color.redComponent > 0.995 && color.greenComponent > 0.995
+          && color.blueComponent > 0.995
+      }
+      let horizontal = (0..<bitmap.pixelsWide).filter { isSurface($0, Int(expectedY * scaleY)) }
+      let vertical = (0..<bitmap.pixelsHigh).filter { isSurface(bitmap.pixelsWide / 2, $0) }
+      guard let left = horizontal.first, let right = horizontal.last,
+        let top = vertical.first, let bottom = vertical.last
+      else { preconditionFailure("Missing visible onboarding surface: \(name)") }
+      let cardWidth = Double(right - left + 1) / scaleX
+      let centerX = Double(left + right) / (2 * scaleX)
+      let centerY = Double(top + bottom) / (2 * scaleY)
+      let expectedWidth = min(560, width - (width < 700 ? 32 : 64))
+      precondition(abs(cardWidth - expectedWidth) < 4, "Unbounded or clipped card: \(name)")
+      precondition(abs(centerX - width / 2) < 2, "Off-center card horizontally: \(name)")
+      precondition(abs(centerY - expectedY) < 2, "Top-heavy card: \(name), y=\(centerY)")
+      precondition(cardWidth > 0 && bottom < bitmap.pixelsHigh - 2, "Clipped card bottom: \(name)")
+      onboardingLayoutChecks += 4
     }
 
     @MainActor private static func render<V: View>(
@@ -380,6 +432,9 @@
         fatalError("Failed to allocate preview for \(name)")
       }
       host.cacheDisplay(in: host.bounds, to: bitmap)
+      if name.hasPrefix("title-onboarding") {
+        verifyOnboardingBounds(bitmap, width: width, height: height, name: name)
+      }
       guard let data = bitmap.representation(using: .png, properties: [:]) else {
         fatalError("Failed to render \(name)")
       }

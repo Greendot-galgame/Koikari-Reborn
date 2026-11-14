@@ -6,140 +6,147 @@
 ![Status: beta](https://img.shields.io/badge/status-0.5.0_beta-c49d4c)
 ![Platforms](https://img.shields.io/badge/platforms-macOS_·_iPhone_·_iPad-456b86)
 
-**用自己的游戏资源，在 Apple 设备上运行独立的 Rust + Metal 视觉小说运行时。**
+**在 macOS、iPhone 和 iPad 上运行《租借男友》（Koikari）的非官方开源运行时。**
 
-An independent Rust + Metal runtime for macOS, iPhone and iPad. Source code is MIT licensed; original game assets are not included or licensed by this project.
+基于 Rust + Metal，使用 SwiftUI 原生界面，直接读取用户自己的 XP3 资源，不依赖原 Windows 程序。
 
-[资源导入](#资源与导入) · [操作与存档](#游玩与存档) · [构建](#构建) · [架构](docs/ARCHITECTURE.md) · [验证范围](docs/TESTING.md) · [参与贡献](CONTRIBUTING.md)
+> 项目仍处于测试阶段。**应用不附带游戏本体或运行所需的原作资源**，使用前需自行合法取得游戏资源。
 
-Rust 游戏核心 + Metal 渲染，macOS / iPhone / iPad 共用代码。
-独立读取用户自己的 XP3，不启动原 EXE、不加载原 DLL、不集成 Steam，不修改资源包。
+[界面预览](#界面预览) · [快速开始](#快速开始) · [基本操作](#基本操作) · [源码构建](#源码构建) · [待修点](#待修点) · [文档与贡献](#文档与贡献)
 
-已接入完整事件数据库、章节衔接、选择与路线、七个结局、变量与受限 TJS、动画转场、音视频、片尾字幕、完整状态存档、CG 与回想。不是删除首章边界的预览版。
-**仍为测试版**：目标路线验证不等于所有输入组合穷举，原生界面、声音和真机的验收范围需分别说明。不是通用、任意插件兼容的 KiriKiri/TJS 引擎；未知必需操作明确报错，不偷偷跳过。
+## 功能
 
-> **源码开源 ≠ 原作资源开源。** 仅本项目的新实现代码与文档按 [MIT](LICENSE) 授权；游戏脚本、图片、音视频、商标及第三方依赖保留各自权利。请自行合法取得资源。详见[资源与授权边界](docs/RESOURCE_POLICY.md)。本项目非原作官方移植。
+- **剧情与演出**：章节、分支选择、角色路线与结局，以及立绘动画、转场、音视频和片尾字幕。
+- **阅读操作**：快进、上一句、历史回看、语音重播，以及隐藏与恢复界面。
+- **存档与继续**：6 个手动存档槽、独立自动进度、存档画面预览和继续游戏。
+- **CG 与回想**：CG 鉴赏、缩略图浏览和场景回想，随实际剧情进度解锁。
+- **个性化设置**：独立音量、对白字号、行间距、对话框不透明度和页码显示。
 
-| 层 | 职责 |
+## 界面预览
+
+用户提供的 macOS 运行截图，点击可查看大图。截图中的原作画面归各自权利人所有，不属于本项目的 MIT 授权范围。
+
+<p align="center">
+  <a href=".github/assets/screenshots/title-screen.jpg"><img src=".github/assets/screenshots/title-screen.jpg" alt="游戏首页：继续游戏、新游戏、存档管理、CG 鉴赏与场景回想" width="100%"></a>
+  <br><sub>游戏首页</sub>
+</p>
+
+<table>
+  <tr>
+    <td width="50%" align="center"><a href=".github/assets/screenshots/dialogue.jpg"><img src=".github/assets/screenshots/dialogue.jpg" alt="剧情对话：角色画面、对白框及阅读工具栏" width="100%"></a><br><sub>剧情对话</sub></td>
+    <td width="50%" align="center"><a href=".github/assets/screenshots/character-introduction.jpg"><img src=".github/assets/screenshots/character-introduction.jpg" alt="人物介绍：空路椿的介绍画面" width="100%"></a><br><sub>人物介绍</sub></td>
+  </tr>
+</table>
+
+## 快速开始
+
+### 1. 安装应用
+
+目前以[源码构建](#源码构建)方式提供应用，支持以下平台：
+
+| 平台 | 最低系统 | 说明 |
+| --- | --- | --- |
+| macOS | macOS 13 | 仅 Apple Silicon（arm64） |
+| iPhone | iOS 16 | 需自行配置签名后安装 |
+| iPad | iPadOS 16 | 需自行配置签名后安装 |
+
+以上是最低部署配置，不代表所有设备与系统版本均已实测。macOS 构建为临时签名、未经公证；iOS 构建默认未签名，详见[签名与安装](docs/RELEASING.md#签名与安装)。
+
+### 2. 准备资源
+
+将以下文件放在**同一文件夹**，不要嵌套子文件夹：
+
+| 文件 | 是否必需 |
 | --- | --- |
-| Rust | XP3 校验与覆盖、剧情解释、变量与路线、媒体解码、存档和进度 |
-| Metal | 分层合成、动画、镜头、转场和有界图集裁剪 |
-| SwiftUI / AVFoundation | 原生界面、文件导入、键鼠/触控、音视频和生命周期 |
+| `data.xp3` | 必需，基础资源 |
+| `adult.xp3` | 可选，对应补丁资源 |
+| `patch.xp3`、`patch1.xp3` … `patch50.xp3` | 可选，更新补丁 |
 
-## 资源与导入
+加载顺序为 `data → adult → patch → patch1 → … → patch50`，后加载的包覆盖同路径资源。补丁只需放入对应 XP3，无需运行原版安装程序。
 
-需自行准备有权使用的 `data.xp3`，可同目录放入 `adult.xp3`、`patch.xp3`、`patch1.xp3` 至 `patch50.xp3`。覆盖顺序：
+### 3. 导入并开始游戏
 
-```text
-data → adult → patch → patch1 → … → patch50
-```
+- **macOS**：启动应用，点击「选择资源文件夹」，选择放有 XP3 的文件夹。
+- **iPhone / iPad**：先启动一次应用，再打开「文件 → 我的 iPhone / iPad → 租借男友 Reborn → GameResources」，放入 XP3。回到游戏等待检查，或点击「重新检查资源」。重签名后应用文件夹名称可能不同。
+- 资源加载成功后，选择「新游戏」；已有有效存档时可选择「继续游戏」。
 
-数字按数值排序；后者覆盖同路径条目。源码和应用不包含 XP3、原版脚本、图片、音频、存档或 Windows 程序。不支持受保护条目，不提供解密或 DRM 绕过。每次提取检查边界、解压和 Adler-32。
+应用只读访问资源，不额外复制一整份资源包。游玩时不要移动或修改 XP3；更新应用前请备份存档，避免先卸载旧版。
 
-- **macOS**：选择含资源的文件夹，直接只读访问，不复制资源。开发启动也可用 `open /path/KoikariReborn.app --args --assets /path/to/assets`。
-- **iPhone/iPad（build 11 起）**：首次启动后，打开「文件 → 我的 iPhone/iPad → 租借男友 Reborn（或签名时指定的应用名）→ GameResources」，手动将 `data.xp3`、可选的 `adult.xp3` / `patch*.xp3` 放入其中。完成移动后回到游戏会自动检查，也可点击「重新检查资源」。没有资源时显示放置位置和缺失提示，不调用目录选择器。
-- iOS 直接读取该文稿目录，不再额外复制一整份资源；游戏运行时不要移动、删除或改写 XP3。旧版已导入的 Application Support 资源和存档仍兼容，不会自动删除。
-- iOS 保存相对资源标识，升级后沙盒路径变化不要求重新导入；兼容迁移早期绝对路径。
-- 「更多 → 兼容状态」可检查实际归档和覆盖顺序。加入/移除归档会改变指纹；不匹配旧档仍保留，切回相同资源版本后再读取。
+## 基本操作
 
-### KG012Z4A0X0X-VER100
+| 操作 | 界面入口 | macOS 快捷键 |
+| --- | --- | --- |
+| 推进剧情 | 点击画面或「下一句」 | `Space` / `→` |
+| 返回上一句 | 「上一句」 | `←` |
+| 开关快进 | 顶栏「快进」 | `F` |
+| 回看文字 / 回溯 | 顶栏「回看」 | — |
+| 隐藏界面 | 顶栏「隐藏界面」 | — |
+| 打开存档 | 菜单 → 存档 | `⌘S` |
+| 停止快进 / 恢复界面 | 点击画面 | `Esc` |
 
-将 ZIP 内 `adult.xp3` 放入主资源同目录，无需运行 `Setup.exe`。补丁中的空 `adult.tjs` 是合法标记；只接受结构、空 segment 表和校验均合法的空条目，不以此放宽受保护/损坏数据检查。
+快进或隐藏界面时，第一次推进操作只停止快进或恢复界面，不翻页。选项需要手动选择；打开菜单、弹窗或切到后台会暂停剧情。
 
-当前授权资源有两项明确缺陷：
-- `voice/vo5/vo5_1068.opus`：XP3 校验通过，但一个 Ogg 页内部 CRC 不符；严格解码拒绝。
-- `scenario/main/1_4.ks` 引用名为 `se` 的不存在音效。
+点击文本框推进异常仍在[待修清单](#待修点)中，可先使用「下一句」或快捷键。
 
-界面明确提示失败片段，可由用户跳过此条或重试；不会自动循环重试、生成假静音、重写校验或伪造播放成功。原基础包的 `bgimage/OPmovie.mp4` 损坏，仍严格拒绝；补丁覆盖的版本可严格导出并交 AVFoundation 播放。
+**存档注意**：不兼容原版游戏存档。存档绑定当前资源组合；更换或增减补丁后，可能需要切回原组合才能读档。
 
-## 游玩与存档
+## 源码构建
 
-- 标题页仅保留 Logo、游戏入口与设置；有有效存档时显示「继续游戏」，不展示存档正文、页码或时间，也不展示资源说明及兼容状态入口。首次使用保留资源导入和简短指引，异常时仍显示必要提示；实际存档与继续游戏逻辑不变。
-- 菜单、设置和提示使用原生 SwiftUI 控件，统一页头、浅色分组与按钮层级；存档采用自适应卡片，回看用分段控件切换可回溯记录/完整文字，设置保留紧凑的即时预览并折叠操作说明。标题 Logo 与淡化底图从玩家当前 XP3 只读加载，不随应用分发。可选标题素材缺失、损坏或超限时显示提示并使用原生样式；不因此放宽资源包或剧情资源校验。
-- CG 鉴赏采用缩略图网格，支持仅显示已解锁项；缩略图接口重新核对真实解锁状态，不接受任意资源路径，也不改变剧情或全尺寸 CG 预览。图片解码有界且在后台串行执行，缩略图缓存限制为 32 项/16 MiB；读取或解码失败时显示「预览暂不可用」，点击后仍走原有严格的全尺寸查看流程。场景回想使用同样的卡片布局，开始前保留确认。
-- 点击画面、下一句、空格/右方向键推进；长对白可滚动。真实选项须显式选择，禁用项不能提交。
-- 快进约每秒四页，可随时停止；再次点击快进、画面或下一句只停止，不额外推进。选项、视频、真正结局、错误、弹窗、后台会停止。仅可跳过脚本明确允许跳过的等待，后台无限动画不阻塞对白。
-- macOS：`F` 切换快进，左方向键上一句，`⌘S` 打开存档。`Esc` 优先停止快进或恢复隐藏界面并保留全屏，再按沿用系统退出行为；设置等弹窗打开时不抢占方向键。
-- 顶栏保留回看、快进、隐藏界面和菜单；菜单中可存读档、重播语音、设置及返回标题。iPad/iPhone 使用独立的原生菜单面板，打开时立即暂停剧情和快进，关闭完成后再进入目标页面；弹层切换期间不恢复剧情，避免菜单刷新与弹层竞争使操作失效。隐藏仅适用于普通停页，会停止快进并冻结剧情/动画时钟，音频仍按原策略播放。点击画面、空格或右方向键第一次只恢复界面，不翻页；选项、视频、错误和弹窗不能被隐藏。
-- 上一句与回看中的回溯恢复画面和完整执行状态，不只是查看文字。保留最近 100 页回溯及 300 页文字；回溯后丢弃未来分支，但不收回已经真正获得的全局解锁。
-- 六个手动槽位和独立自动进度（槽 9），支持覆盖/读取确认。卡片按需显示对应存档场景的 16:9 缩略图，包含已保存的背景、角色和视觉时间线，不拿当前画面代替；覆盖保存后刷新。旧格式、视频/片尾/人物介绍或无法渲染的进度显示占位，预览不可用不影响原有读档判断。图片只在后台生成并缓存，不重写存档或推进剧情。继续游戏寻找最新有效进度；损坏、不匹配或验证失败的档不替换当前状态。
-- v2 存档保存完整解释器位置、调用/条件/宏帧、选项、变量、计时器、视觉时间线、音视频标识及进度；原子写入并绑定资源指纹。旧预览档仅在迁移可验证时转换，否则明确拒绝并保留文件。原版游戏存档不兼容。
-- 自动保存失败会警告，不能保证强制退出后恢复最新页；不覆盖手动槽。新游戏、标题与回放保留同资源指纹下真正获得的进度。CG/回想只通过实际事件解锁，没有一键全开或章节跳转替代实现。
-- 设置独立调整音乐/语音/音效音量、对白字号、背景不透明度与行间距，可选显示页码；阅读设置使用同一对白组件即时预览，偏好独立保存。可重播当前语音；精确原生音频/视频播放偏移不持久化。
-- 全部静音或单声道音量为零时，不启动对应解码/播放器；取消静音从当前片段重建，不推进剧情。音频输出无法启动时显示一次恢复选择，可「静音并继续」或显式重试，不把设备故障记成每条资源损坏。静音不等于实际声音验收通过；重新请求播放时仍做严格资源校验。
-- 音视频在后台、弹窗、错误和系统中断时受统一策略控制。OS 不允许自动恢复或耳机断开后，须显式同意恢复。视频失败不是完成，过期回调不能推进新片段；不可跳视频没有手动跳过入口。
-- Metal 支持场景分层、样式、移动、镜头、震动、白场与转场；片尾和消息标记有独立原生显示。宽动画图集仅上传有明确几何的裁剪帧，不按图集宽度猜帧数。
-
-## 构建
-
-需要 Apple Silicon Mac、完整 Xcode（iOS SDK）、Rust 1.88+、Cargo/rustup 和 CMake；依赖固定在 Cargo.lock。仅构建 arm64，最低部署配置 macOS 13 / iOS 16。低系统版本不因构建成功而视为实测通过。
+需要 **Apple Silicon Mac、完整 Xcode（含所需 SDK）、Rust 1.88+ / rustup、Python 3**。Opus 依赖使用 CMake 3.x，以下命令会在项目内隔离安装。
 
 ```sh
 git clone https://github.com/Greendot-galgame/Koikari-Reborn.git
 cd Koikari-Reborn
-# Opus 原生构建使用 CMake 3.x，避免 CMake 4 与旧上游配置不兼容。
+
 python3 -m venv .build-tools
 .build-tools/bin/pip install cmake==3.31.10
 export PATH="$PWD/.build-tools/bin:$HOME/.cargo/bin:$PATH"
-```
 
-```sh
+# 构建并启动 macOS 版
 CONFIGURATION=Release scripts/build-apple.sh macosx
-CONFIGURATION=Release scripts/build-apple.sh iphonesimulator
-CONFIGURATION=Release scripts/build-apple.sh iphoneos
+open target/xcode-macosx/Build/Products/Release/KoikariReborn.app
 ```
 
-不设置 CONFIGURATION 时为 Debug。产物分别位于 `target/xcode-<sdk>/Build/Products/Release[-iphonesimulator|-iphoneos]/KoikariReborn.app`。
-构建脚本支持 `CARGO_TARGET_DIR` 隔离 Rust 缓存，并从相同缓存复制静态库。Release 默认保留 host 构建工具的调试信息，避开 Rust 1.95 自带 LLVM objcopy 对 Mach-O 编译插件进行 debug stripping 时的加载错误；实际应用库仍使用 Release 优化，host 工具不会进入应用包。
-也可打开 Xcode 工程，选择 KoikariReborn scheme。
-
-macOS/模拟器构建会刷新临时签名并验签；设备构建未签名，不能直接安装。真机需自行在 Xcode 选择 Team 并配置签名。不附带凭据、证书或签名 IPA；未经 Developer ID 公证、App Store 审核或正式分发验收。
-
-## 验证与边界
+其他目标按需构建：
 
 ```sh
-cargo fmt --check
-cargo test --locked --all-targets
-cargo clippy --locked --all-targets -- -D warnings
-xcrun swift-format lint --strict apple/*.swift tests/*.swift
-
-# 真实资源必须显式启用；不复制进源码，也不改写原包。
-KOIKARI_ASSETS=/path/to/original KOIKARI_PATCH_ASSETS=/path/to/combined \
-  cargo test --locked --release --test real_patch -- --ignored --nocapture --test-threads=1
-cargo run --locked --release --bin koikari -- \
-  verify-targets /path/to/combined 5000000 --max-states 2000000
+CONFIGURATION=Release scripts/build-apple.sh iphonesimulator  # Apple Silicon 模拟器
+CONFIGURATION=Release scripts/build-apple.sh iphoneos        # iPhone / iPad 真机
 ```
 
-build 9 在 macOS 上的 137 项默认 Rust 回归、23 项 opt-in 测试已通过；不同平台的条件编译测试数量可能不同，默认绿灯不能代替真实资源/GPU 检查。集成候选的真实 Engine/XP3 目标遍历已执行 124 个主脚本、13 处选择的 31 个分支、七个终局、150 个自然解锁回放，记录 84 个获得的图库 ID，无直接章节探针或强制标志。完整性审计通过 19,513 个生效条目。
+构建脚本会安装对应 Rust target，并打印应用产物路径；未指定 `CONFIGURATION` 时为 Debug。真机安装需在 Xcode 打开 [KoikariReborn 工程](apple/KoikariReborn.xcodeproj)，选择同名 scheme 并配置自己的 Team 与签名。
 
-`verify-targets` 在每个入口/选择首次观察到的合法状态分叉各选项，已覆盖选择使用规范输入；回放从自然终局进度调度。它报告 `targets_complete=true`、`complete=false`：不穷举所有选择组合、反复新游戏后的累积进度分支或每个条件路径。完整组合验证仍使用有预算的 `verify-all`，耗尽预算会明确失败，不冒充通过。
+开发检查、真实资源测试和已验证范围见[测试文档](docs/TESTING.md)；代码分层见[架构文档](docs/ARCHITECTURE.md)。
 
-CLI 还提供 `list`、`text`、`verify`、`walk` 等资源与执行诊断。不将静态清单、合成脚本或直接媒体探测当作自然剧情通关。
-全部图像及绝大多数音频已分别解码；上面的单条 Opus 损坏仍保留。纹理/视频内存测试不代表真实 iPhone/iPad 峰值内存安全证明。
+## 当前限制
 
-Rust 的继承依赖 `block 0.1.6` 有 future-incompatibility 警告，不等于本项目 Clippy 失败。无界面测试、三平台构建和 shader 编译不能证明 UI、扬声器输出、真机中断与设备丢失行为通过；记录具体验收设备与未测范围。
+- 这是针对《租借男友》的运行时，不是通用 KiriKiri / TJS 引擎，不支持任意游戏或插件。
+- 部分界面与交互仍待完善；真机、实际声音、全部输入组合及媒体中断场景尚未完成验证，详见[测试范围](docs/TESTING.md#仍未关闭的范围)。
+- 已发现部分原作资源存在音频损坏、音效缺失或基础版 OP 损坏，详见[已知资源缺陷](docs/TESTING.md#已知资源缺陷)。遇到错误会明确提示，不修改原资源或绕过校验。
 
-macOS、iPhone/iPad 模拟器已完成 build 9 的有界真实资源 UI 检查。长程选择、视频、结局和计时器部分使用真实 Engine 合法遍历产生的检查点，不代表从头自然 UI 通关。**实际声音、真机、全部输入组合、完整媒体异常矩阵、停止快进瞬间精确零额外页仍未验证。** 详见[分层测试记录](docs/TESTING.md)。
+## 待修点
 
-[GitHub Checks](.github/workflows/checks.yml) 提供无原作资源的 Rust 检查与三 SDK 构建；PR 自动检查，也可手动运行。真实 XP3、存档和私有验收资料不会上传 CI。初次发布遵照先开源、后测试的安排，不自动触发新一轮测试。
+1. 修复点击文本框无法推进剧情的问题。
+2. 修复快进时“隐藏对话框”按钮一直闪烁的问题。
+3. 修复点击对话框时偶尔闪现空白旁白的问题。
+4. 删除“旁白”这两个字，保留旁白内容。
+5. 支持在设置中调整对话框大小，并保持尺寸稳定，避免因人物挤占空间而变化。
+6. 适当缩小对话框的默认宽度。
+7. 适当增大默认字号。
+8. 优化对话框的文字排版。
+9. 删除首页的“Koikari Reborn”文字，保持界面简洁。
+10. 支持在设置中调节快进速度。
+11. 为人物介绍页面的对话框设计专属 UI。
+12. 为场景回想页面增加预览图片。
+13. CG 预览支持查看大图。
 
-## 原生验收注意
+## 文档与贡献
 
-使用专用模拟器，保留原数据；操作前备份并核对手动存档。iOS/iPadOS 从空 `GameResources` 与缺失提示开始，经 Files 实际移动 XP3 后返回游戏检查；macOS 经原生目录选择器导入。不用启动参数或直接填充目标目录冒充 UI 流程。资源源副本可用 APFS 克隆节省空间，Files 移动与应用内导入仍需真实操作。合成长文布局测试与真实资源路线验证必须区分。
-未配备音频输出/采集设备时，按钮变化、成功解码或没有报错不等于听感验收。
+- [架构说明](docs/ARCHITECTURE.md) · [测试与覆盖范围](docs/TESTING.md) · [发布流程](docs/RELEASING.md)
+- [贡献指南](CONTRIBUTING.md)：开发约定与提交要求，欢迎提交 Issue 和 PR。
+- [问题反馈](https://github.com/Greendot-galgame/Koikari-Reborn/issues/new/choose)：请附版本、平台、复现步骤和脱敏错误信息，不要上传原作资源或存档。
+- [安全报告](SECURITY.md)：安全问题请按指引私下报告。
 
-## 结构
+## 许可证
 
-- `xp3.rs`：严格归档、安全路径、覆盖与指纹。
-- `kag.rs / events.rs / tjs.rs / story.rs`：数据库控制流、受限表达式、执行状态与真正的路线终局。
-- `animation.rs / renderer.rs / scene.metal`：可保存视觉时间线、裁剪与 Metal 合成。
-- `media.rs / GameVideo.swift`：严格音频解码、视频校验/缓存和 AVFoundation 播放。
-- `model.rs / save.rs`：完整状态、进度隔离、版本化持久化和回溯。
-- `ffi.rs / apple/`：原生交互、输入/生命周期门控、字幕、CG 与回放。
-
-## 参与与发布
-
-- [贡献指南](CONTRIBUTING.md)：开发约定、回归要求与资源提交限制。
-- [发布流程](docs/RELEASING.md)：版本、签名与不含资源的包。
-- [问题反馈](https://github.com/Greendot-galgame/Koikari-Reborn/issues/new/choose)：附版本、平台和脱敏复现步骤，不上传原作资源或存档。
-- [安全报告](SECURITY.md)：归档、路径、解码与存档漏洞请私下报告。
+本项目新实现的代码与文档采用 [MIT](LICENSE) 许可证；第三方依赖保留各自许可证。原作资源、角色、商标等权利归各自权利人，本项目并非官方移植，也不提供资源下载、解密或 DRM 绕过。详见[资源与授权边界](docs/RESOURCE_POLICY.md)。
