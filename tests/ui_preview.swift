@@ -390,7 +390,12 @@
         text: "看似从容，其实并不从容的椿（24）。\n「心、心跳还是停不下来……我都快死掉了」",
         textScale: 1, backgroundOpacity: 0.9, lineSpacing: 5, onContinue: {}
       )
-      .frame(width: 660).padding(24).background(Color(white: 0.32))
+      .frame(width: 660).padding(24).background(
+        LinearGradient(
+          colors: [
+            Color(red: 0.94, green: 0.89, blue: 0.96), Color(red: 0.98, green: 0.96, blue: 0.90),
+          ],
+          startPoint: .topLeading, endPoint: .bottomTrailing))
       try render(
         interludeText, name: "interlude-text", width: 720, height: 320, output: output)
       let interludeArt = VStack {
@@ -398,7 +403,12 @@
         GameInterludePanel(
           text: "", textScale: 1, backgroundOpacity: 0.9, lineSpacing: 5, onContinue: {}
         ).padding(24)
-      }.frame(width: 720, height: 405).background(Color(white: 0.45))
+      }.frame(width: 720, height: 405).background(
+        LinearGradient(
+          colors: [
+            Color(red: 0.70, green: 0.82, blue: 0.90), Color(red: 0.96, green: 0.83, blue: 0.86),
+          ],
+          startPoint: .topLeading, endPoint: .bottomTrailing))
       try render(
         interludeArt, name: "interlude-art", width: 720, height: 405, output: output)
       try render(

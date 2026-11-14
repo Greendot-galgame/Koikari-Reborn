@@ -62,7 +62,7 @@ Swift 的按需读取闭包只在主线程执行；复制后的独立数据才�
 
 对白框的几何完全由 [ReadingPolicy.swift](../apple/ReadingPolicy.swift) 的 `ReadingLayout` 计算：只接收画布尺寸、Dynamic Type、字号、行距和用户「对话框大小」，不接收当前文本、说话人或立绘位置。SwiftUI 视图负责在固定框内滚动和重新置顶；人物立绘的 `fc` 位置不再为对白框让出宽度。`canOfferHide` 只用于工具栏的稳定可用状态，实际 `hideInterface` 仍使用严格的 `canHide`（还要求当前消息可见且不在计时等待），因此逐页的等待状态不会让按钮闪烁，也不会把不可隐藏的页面误标为可隐藏。
 
-人物介绍仍是引擎的 `interlude` 状态，不新增剧情分支。Swift 只在快进/选择/视频等阻塞条件下显示独立的 `GameInterludePanel`：有文本时按脚本写入的两行拆成说明与引语，使用深色卡；无文本的单图介绍只显示轻量「轻触继续」胶囊；两者都通过同一 `game.next()` 进入下一页。
+人物介绍仍是引擎的 `interlude` 状态，不新增剧情分支。Swift 只在快进/选择/视频等阻塞条件下显示独立的 `GameInterludePanel`：有文本时按脚本写入的两行拆成说明与引语，使用与阅读框一致的浅色半透明卡和紫色强调；无文本的单图介绍只显示轻量「轻触继续」胶囊；两者都通过同一 `game.next()` 进入下一页。
 
 `GalleryEntry.preview` 是引擎从事件脚本静态解析的代表图：优先首个 `evNNN_N` CG，退而取首个背景；不执行脚本、不读取锁定资源，按 2 MiB 和 16,000 行上限扫描，并按当前 Store 缓存结果。`kr_replay_image` 只接受 `kr_replays` 中已解锁的 ID，在读取前限制 32 MiB；Swift 复用有界缩略图管线。CG「查看大图」仍通过 `kr_gallery_image` 取同一已解锁资产，只把最长边从 384 提高到 1920，使用独立缓存，不启动第二个 Metal renderer。快进速度由 `FastForwardPolicy` 把 1×–5× 映射为 250–50 ms 的页面步进，不改变等待、选项或视频的语义。
 

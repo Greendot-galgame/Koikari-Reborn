@@ -16,9 +16,6 @@ enum GameTheme {
   static let warning = Color(red: 0.60, green: 0.28, blue: 0.08)
   static let success = Color(red: 0.17, green: 0.42, blue: 0.31)
   static let cornerRadius: CGFloat = 10
-  // Character introductions use a warmer, more theatrical palette than reading.
-  static let interludeAccent = Color(red: 0.86, green: 0.72, blue: 0.46)
-  static let interludeSurface = Color(red: 0.12, green: 0.10, blue: 0.12)
 }
 
 struct GameToolbarLabelStyle: LabelStyle {
@@ -245,28 +242,28 @@ struct GameInterludePanel: View {
     if hasContent {
       Button(action: onContinue) {
         VStack(alignment: .leading, spacing: 10) {
-          HStack(spacing: 8) {
-            Rectangle().fill(GameTheme.interludeAccent).frame(width: 22, height: 1)
+          HStack(spacing: 6) {
+            Image(systemName: "sparkle")
+              .font(.system(size: 10, weight: .semibold))
+              .foregroundStyle(GameTheme.accent)
+              .accessibilityHidden(true)
             Text("人物介绍")
               .font(.system(size: 11, weight: .semibold))
-              .tracking(3)
-              .foregroundStyle(GameTheme.interludeAccent)
-            Rectangle().fill(GameTheme.interludeAccent.opacity(0.45))
-              .frame(width: 44, height: 1)
+              .tracking(2.2)
+              .foregroundStyle(GameTheme.accent)
             Spacer(minLength: 0)
           }
-          .accessibilityHidden(true)
           if !lines.description.isEmpty {
             Text(lines.description)
               .font(.system(size: descriptionSize * min(textScale, 1.3)))
-              .foregroundStyle(.white.opacity(0.72))
+              .foregroundStyle(GameTheme.secondaryText)
               .lineSpacing(max(2, lineSpacing * 0.5))
               .fixedSize(horizontal: false, vertical: true)
           }
           if !lines.quote.isEmpty {
             Text(lines.quote)
               .font(.system(size: quoteSize * textScale, weight: .medium, design: .serif))
-              .foregroundStyle(.white.opacity(0.96))
+              .foregroundStyle(GameTheme.text)
               .lineSpacing(lineSpacing + 1)
               .fixedSize(horizontal: false, vertical: true)
           }
@@ -274,27 +271,43 @@ struct GameInterludePanel: View {
             Spacer(minLength: 0)
             Text("轻触继续")
               .font(.system(size: 11.5, weight: .medium))
-              .foregroundStyle(.white.opacity(0.58))
+              .foregroundStyle(GameTheme.secondaryText)
             Image(systemName: "chevron.right")
               .font(.system(size: 9, weight: .semibold))
-              .foregroundStyle(.white.opacity(0.58))
+              .foregroundStyle(GameTheme.accent)
           }
           .padding(.top, 2)
           .accessibilityHidden(true)
         }
-        .padding(.horizontal, 26)
-        .padding(.vertical, 20)
+        .padding(.leading, 18)
+        // The rail is an overlay so it spans the authored lines without making
+        // the otherwise intrinsic card grow to fill the scene.
+        .overlay(alignment: .leading) {
+          RoundedRectangle(cornerRadius: 1.5)
+            .fill(GameTheme.accent)
+            .frame(width: 3)
+            .accessibilityHidden(true)
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
           RoundedRectangle(cornerRadius: 16)
-            .fill(GameTheme.interludeSurface.opacity(min(1, max(0.55, backgroundOpacity))))
+            .fill(GameTheme.surface.opacity(min(1, max(0.65, backgroundOpacity))))
+            .overlay {
+              LinearGradient(
+                colors: [GameTheme.accent.opacity(0.055), .clear],
+                startPoint: .topLeading, endPoint: .center
+              )
+              .clipShape(RoundedRectangle(cornerRadius: 16))
+            }
         }
         .overlay {
           RoundedRectangle(cornerRadius: 16)
-            .strokeBorder(GameTheme.interludeAccent.opacity(0.28), lineWidth: 1)
+            .strokeBorder(GameTheme.accent.opacity(0.20), lineWidth: 1)
             .allowsHitTesting(false)
         }
-        .shadow(color: .black.opacity(0.22), radius: 20, y: 8)
+        .shadow(color: .black.opacity(0.12), radius: 16, y: 5)
         .contentShape(RoundedRectangle(cornerRadius: 16))
       }
       .buttonStyle(.plain)
@@ -302,15 +315,19 @@ struct GameInterludePanel: View {
       .accessibilityLabel("人物介绍，轻触继续")
       .accessibilityHint("继续剧情")
     } else {
-      // One-image eye-catches embed their own typography; only a quiet hint is added.
+      // One-image eye-catches embed their own typography; add only a quiet,
+      // light hint that belongs to the same native reading surface.
       Button(action: onContinue) {
         Label("轻触继续", systemImage: "chevron.right")
           .font(.system(size: 14, weight: .medium))
-          .foregroundStyle(.white.opacity(0.92))
+          .foregroundStyle(GameTheme.accent)
           .padding(.horizontal, 18)
           .padding(.vertical, 10)
-          .background(.black.opacity(0.32), in: Capsule())
-          .overlay { Capsule().strokeBorder(.white.opacity(0.22), lineWidth: 1) }
+          .background(GameTheme.surface.opacity(0.94), in: Capsule())
+          .overlay {
+            Capsule().strokeBorder(GameTheme.accent.opacity(0.22), lineWidth: 1)
+          }
+          .shadow(color: .black.opacity(0.10), radius: 8, y: 2)
           .contentShape(Capsule())
       }
       .buttonStyle(.plain)
