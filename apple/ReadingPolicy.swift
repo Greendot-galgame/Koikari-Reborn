@@ -17,9 +17,16 @@ struct ReadingEligibility {
   var importing = false
   var hasError = false
 
+  /// Hiding also pauses the story clock, so a waiting page is never hidden.
   var canHide: Bool {
-    active && hasScene && !title && !finished && !blocked && messageVisible
-      && !hasChoices && !hasVideo && !hasCredits && !hasInterlude && !waiting
+    canOfferHide && messageVisible && !waiting
+  }
+
+  /// Stable toolbar affordance: transient page states (waits, a momentarily
+  /// empty message layer) must not make the control blink during fast forward.
+  var canOfferHide: Bool {
+    active && hasScene && !title && !finished && !blocked
+      && !hasChoices && !hasVideo && !hasCredits && !hasInterlude
       && !modalOpen && !importing && !hasError
   }
 }
@@ -80,26 +87,61 @@ struct GameplayMenuPresentation: Equatable {
   }
 }
 
+/// Page cadence while fast-forwarding. One is the original 250 ms page step;
+/// higher values shorten the interval without changing any engine semantics.
+enum FastForwardPolicy {
+  static let baseInterval: UInt64 = 250_000_000
+  static let range: ClosedRange<Double> = 1...5
+
+  static func intervalNanoseconds(speed: Double) -> UInt64 {
+    guard speed.isFinite else { return baseInterval }
+    let clamped = min(range.upperBound, max(range.lowerBound, speed))
+    return UInt64((Double(baseInterval) / clamped).rounded())
+  }
+}
+
+/// The reading box is deliberately independent of the current page and of any
+/// sprite placement: its geometry is derived only from the canvas, the user's
+/// size preference and Dynamic Type. Text length changes what scrolls, not the
+/// box that holds it.
 enum ReadingLayout {
-  // Reserve space for the speaker/actions and let long or large text scroll.
-  // Unlike the scene, reading typography does not scale with the 16:9 canvas.
-  static let chromeHeight = 80.0
+  static let baseFontSize = 22.0
+  static let chromeHeight = 96.0
+
+  static func textSize(textScale: Double, typeScale: Double) -> Double {
+    baseFontSize * max(0.5, textScale) * max(0.5, typeScale)
+  }
 
   static func minimumTextViewport(textScale: Double, typeScale: Double) -> Double {
-    18 * textScale * typeScale * 1.5
+    textSize(textScale: textScale, typeScale: typeScale) * 1.45
+  }
+
+  static func panelWidth(
+    sceneWidth: Double, availableWidth: Double? = nil, dialogueScale: Double
+  ) -> Double {
+    let fraction = sceneWidth < 700 ? 0.86 : (sceneWidth < 1100 ? 0.75 : 0.70)
+    let preferred = min(900, max(260, sceneWidth * fraction)) * clampScale(dialogueScale)
+    let ceiling = min(sceneWidth - 24, (availableWidth ?? sceneWidth) - 24)
+    return max(0, min(preferred, max(240, ceiling)))
   }
 
   static func panelHeight(
-    sceneHeight: Double, availableHeight: Double? = nil, compact: Bool,
-    textScale: Double, typeScale: Double
+    sceneHeight: Double, availableHeight: Double? = nil, textScale: Double,
+    typeScale: Double, lineSpacing: Double, dialogueScale: Double
   ) -> Double {
-    let base = compact ? 154.0 : 190.0
-    let minimum = chromeHeight + minimumTextViewport(textScale: textScale, typeScale: typeScale)
-    let preferred = max(minimum, 88 + (base - 88) * max(1, textScale) * max(1, typeScale))
-    // Large text may use letterbox space; never squeeze its viewport to a fraction
-    // of the scene. Speaker metadata scrolls with the text, actions stay reachable.
+    let fontSize = textSize(textScale: textScale, typeScale: typeScale)
+    let contentMinimum =
+      chromeHeight + fontSize * 2.65 + max(0, lineSpacing) * 2
+    let preferred = max(contentMinimum, sceneHeight * 0.26 * clampScale(dialogueScale))
+    // Large text may use letterbox space; never hide the scene entirely.
     let ceiling = min(
-      max(0, (availableHeight ?? sceneHeight) - 16), max(sceneHeight * 0.72, minimum))
+      max(0, (availableHeight ?? sceneHeight) - 16),
+      max(sceneHeight * 0.72, contentMinimum))
     return max(0, min(ceiling, preferred))
+  }
+
+  private static func clampScale(_ scale: Double) -> Double {
+    guard scale.isFinite else { return 1 }
+    return min(1.35, max(0.75, scale))
   }
 }

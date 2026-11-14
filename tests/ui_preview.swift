@@ -34,9 +34,11 @@
     @Published var modalOpen = false
     @Published var resourceStatus: String
     @Published var textScale = 1.0
+    @Published var dialogueScale = 1.0
     @Published var dialogueOpacity = 0.9
     @Published var dialogueLineSpacing = 5.0
     @Published var showPageNumber = false
+    @Published var fastForwardSpeed = 1.0
     @Published var bgmVolume = 0.35
     @Published var voiceVolume = 1.0
     @Published var seVolume = 0.7
@@ -69,6 +71,18 @@
     func galleryThumbnail(_ entry: CollectionEntry) async -> Image? {
       guard entry.unlocked, !thumbnailUnavailable else { return nil }
       return await thumbnails.image(for: entry.id) { Self.syntheticImage(entry.id) }
+    }
+    func replayThumbnail(_ entry: CollectionEntry) async -> Image? {
+      guard entry.unlocked, !thumbnailUnavailable, entry.preview != nil else { return nil }
+      return await thumbnails.image(for: "replay:\(entry.id)") {
+        Self.syntheticImage(entry.id)
+      }
+    }
+    func galleryFullImage(_ entry: CollectionEntry) async -> Image? {
+      guard entry.unlocked, !thumbnailUnavailable else { return nil }
+      return await thumbnails.image(for: "full:\(entry.id)") {
+        Self.syntheticImage(entry.id)
+      }
     }
     func beginSavePreviews() {}
     func endSavePreviews() { clearSaveThumbnails() }
@@ -132,7 +146,7 @@
           speaker: "", text: "", error: nil),
         SaveSlot(
           slot: 4, exists: true, compatible: true, savedAt: 1_789_900_000_000,
-          pages: 92, speaker: "旁白", text: "很长的合成存档摘要，用来检查卡片中的文字换行。更多的文字只会折叠在摘要中，不会挤走操作按钮。",
+          pages: 92, speaker: "", text: "很长的合成存档摘要，用来检查卡片中的文字换行。更多的文字只会折叠在摘要中，不会挤走操作按钮。",
           error: nil, previewRevision: String(repeating: "c", count: 64)),
         SaveSlot(
           slot: 5, exists: false, compatible: false, savedAt: 0, pages: 0,
@@ -150,7 +164,8 @@
       replays = (1...6).map { number in
         CollectionEntry(
           id: "synthetic-replay-\(number)", title: "示例回想 \(number)",
-          asset: "", unlocked: number < 3)
+          asset: "", unlocked: number < 3,
+          preview: number < 3 ? "ev\(100 + number)_1" : nil)
       }
       timeline = [
         PastPage(page: 125, speaker: "", text: "阳光越过窗沿，轻轻落在书页上。", interlude: false),
@@ -371,6 +386,30 @@
         .background(GameTheme.background)
         try render(panel, name: name, width: width + 40, height: height + 40, output: output)
       }
+      let interludeText = GameInterludePanel(
+        text: "看似从容，其实并不从容的椿（24）。\n「心、心跳还是停不下来……我都快死掉了」",
+        textScale: 1, backgroundOpacity: 0.9, lineSpacing: 5, onContinue: {}
+      )
+      .frame(width: 660).padding(24).background(Color(white: 0.32))
+      try render(
+        interludeText, name: "interlude-text", width: 720, height: 320, output: output)
+      let interludeArt = VStack {
+        Spacer()
+        GameInterludePanel(
+          text: "", textScale: 1, backgroundOpacity: 0.9, lineSpacing: 5, onContinue: {}
+        ).padding(24)
+      }.frame(width: 720, height: 405).background(Color(white: 0.45))
+      try render(
+        interludeArt, name: "interlude-art", width: 720, height: 405, output: output)
+      try render(
+        CGViewer(
+          title: "示例场景 1", image: Image(systemName: "photo"), loading: false,
+          failed: false, close: {}),
+        name: "cg-viewer", width: 900, height: 600, output: output)
+      try render(
+        CGViewer(
+          title: "示例场景 1", image: nil, loading: true, failed: false, close: {}),
+        name: "cg-viewer-loading", width: 900, height: 600, output: output)
       print("\(onboardingLayoutChecks) rendered onboarding bounds assertions passed")
       print(
         "Rendered \(renderCount) macOS SwiftUI visual fixtures; library images/data are synthetic; no engine, actual gameplay or iOS UI was exercised."

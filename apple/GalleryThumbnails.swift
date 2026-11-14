@@ -45,6 +45,9 @@ final class GameGalleryThumbnails {
     let bytes: Int
   }
 
+  /// Longest side requested from ImageIO. Reading uses the small shared default;
+  /// the CG viewer asks for a larger bounded still without decoding the original.
+  nonisolated let maximumSide: Int
   private let decoder: Decoder
   private var generation = UUID()
   private var pending: [String: Request] = [:]
@@ -58,8 +61,11 @@ final class GameGalleryThumbnails {
   var cachedEntryCount: Int { cache.count }
   var pendingWaiterCount: Int { pending.values.reduce(0) { $0 + $1.waiters.count } }
 
-  init(decoder: @escaping Decoder = { GameGalleryThumbnails.decode($0) }) {
-    self.decoder = decoder
+  init(maximumSide: Int = thumbnailSide, decoder: Decoder? = nil) {
+    let side = max(1, min(maximumSide, Self.dimensionLimit))
+    self.maximumSide = side
+    self.decoder =
+      decoder ?? { data in GameGalleryThumbnails.decode(data, maximumSide: side) }
   }
 
   func image(for id: String, read: @escaping @MainActor () -> Data?) async -> Image? {
@@ -224,7 +230,7 @@ final class GameGalleryThumbnails {
 
   private func insert(_ decoded: CGImage, for id: String) -> Image? {
     guard decoded.width > 0, decoded.height > 0,
-      decoded.width <= Self.thumbnailSide, decoded.height <= Self.thumbnailSide,
+      decoded.width <= maximumSide, decoded.height <= maximumSide,
       decoded.bytesPerRow > 0
     else { return nil }
     let (bytes, overflow) = decoded.bytesPerRow.multipliedReportingOverflow(by: decoded.height)
@@ -248,8 +254,11 @@ final class GameGalleryThumbnails {
 
   /// Validate the encoded source before allocating pixels. Thumbnail creation requests the
   /// full frame (with EXIF orientation), bounded to 384 on its longest side, not a crop.
-  nonisolated static func decode(_ data: Data) -> CGImage? {
-    autoreleasepool {
+  nonisolated static func decode(
+    _ data: Data, maximumSide: Int = thumbnailSide
+  ) -> CGImage? {
+    let side = max(1, min(maximumSide, dimensionLimit))
+    return autoreleasepool { () -> CGImage? in
       guard !data.isEmpty, data.count <= encodedByteLimit,
         let source = CGImageSourceCreateWithData(
           data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
@@ -266,13 +275,13 @@ final class GameGalleryThumbnails {
       let options: [CFString: Any] = [
         kCGImageSourceCreateThumbnailFromImageAlways: true,
         kCGImageSourceCreateThumbnailWithTransform: true,
-        kCGImageSourceThumbnailMaxPixelSize: thumbnailSide,
+        kCGImageSourceThumbnailMaxPixelSize: side,
         kCGImageSourceShouldCacheImmediately: true,
         kCGImageSourceShouldAllowFloat: false,
       ]
       guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary),
         image.width > 0, image.height > 0,
-        image.width <= thumbnailSide, image.height <= thumbnailSide
+        image.width <= side, image.height <= side
       else { return nil }
       return image
     }

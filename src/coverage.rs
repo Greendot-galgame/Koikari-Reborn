@@ -1837,11 +1837,10 @@ pub fn verify_with_driver<D: Driver>(
             .pages
             .saturating_add(next.pages.saturating_sub(state.pages));
         match action {
-            Action::Tick { .. } => {
-                if next.flow.wait_ms == 0 {
-                    report.timers_completed += 1;
-                }
+            Action::Tick { .. } if next.flow.wait_ms == 0 => {
+                report.timers_completed += 1;
             }
+            Action::Tick { .. } => (),
             Action::FinishVideo { .. } => report.videos_completed += 1,
             _ => (),
         }

@@ -50,6 +50,9 @@ char *kr_gallery(Host *handle);
 // Free success exactly once with kr_bytes_free(bytes, original length).
 // Failure: NULL, zero length (if nonnull), kr_error. length must be writable.
 uint8_t *kr_gallery_image(Host *handle, const char *id, size_t *length);
+// Representative still of an unlocked replay entry; locked/unknown IDs fail closed.
+// Owned bytes: kr_bytes_free(bytes, length). Failure: NULL, zero length, kr_error.
+uint8_t *kr_replay_image(Host *handle, const char *id, size_t *length);
 char *kr_replays(Host *handle);
 // Preview only an unlocked CG, composed by the Rust Metal renderer.
 int32_t kr_gallery_show(Host *handle, const char *id);

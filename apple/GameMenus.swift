@@ -89,6 +89,10 @@ struct CollectionMenu: View {
   @State private var selected: CollectionEntry?
   @State private var confirmReplay = false
   @State private var unlockedOnly = false
+  @State private var showsLarge = false
+  @State private var fullImage: Image?
+  @State private var fullImageLoading = false
+  @State private var fullImageFailed = false
   private var entries: [CollectionEntry] { replay ? game.replays : game.gallery }
   private var visibleEntries: [CollectionEntry] { entries.filter { !unlockedOnly || $0.unlocked } }
   private var columns: [GridItem] {
@@ -103,7 +107,7 @@ struct CollectionMenu: View {
         dismiss()
       }
       if let selected, !replay {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
           HStack {
             Button {
               game.hideCG()
@@ -112,10 +116,19 @@ struct CollectionMenu: View {
               Label("返回列表", systemImage: "chevron.left")
             }.buttonStyle(.bordered).accessibilityIdentifier("gallery-back")
             Spacer()
-            Text(selected.title).font(.callout).foregroundStyle(.secondary)
+            Text(selected.title).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+            Button(action: openLargePreview) {
+              Label("查看大图", systemImage: "arrow.up.left.and.arrow.down.right")
+            }
+            .buttonStyle(.borderedProminent).accessibilityIdentifier("cg-view-large")
           }
           MetalCanvas(game: game).aspectRatio(16 / 9, contentMode: .fit)
             .accessibilityIdentifier("gallery-preview")
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) { openLargePreview() }
+            .accessibilityHint("双击可查看大图")
+          Text("双击画面或点按「查看大图」可放大欣赏，并支持双指缩放。")
+            .font(.caption).foregroundStyle(.secondary)
           Spacer(minLength: 0)
         }.padding(20)
       } else {
@@ -145,6 +158,9 @@ struct CollectionMenu: View {
                     confirmReplay = true
                   } else if game.showCG(entry) {
                     selected = entry
+                    fullImage = nil
+                    fullImageFailed = false
+                    fullImageLoading = false
                   }
                 }
               }
@@ -157,7 +173,22 @@ struct CollectionMenu: View {
     .onDisappear {
       game.hideCG()
       game.clearGalleryThumbnails()
+      fullImage = nil
     }
+    .onChange(of: showsLarge) { presented in
+      if !presented {
+        fullImage = nil
+        fullImageLoading = false
+        fullImageFailed = false
+      }
+    }
+    #if os(iOS)
+      .fullScreenCover(isPresented: $showsLarge) { largePreview }
+    #else
+      .sheet(isPresented: $showsLarge) {
+        largePreview.frame(minWidth: 880, idealWidth: 1180, minHeight: 560, idealHeight: 760)
+      }
+    #endif
     .confirmationDialog(
       "开始回想「\(selected?.title ?? "")」？当前自动进度会更新，手动存档保留。", isPresented: $confirmReplay,
       titleVisibility: .visible
@@ -166,6 +197,128 @@ struct CollectionMenu: View {
         if let selected, game.action("replay:\(selected.id)") { dismiss() }
       }
       Button("取消", role: .cancel) { selected = nil }
+    }
+  }
+
+  private var largePreview: some View {
+    CGViewer(
+      title: selected?.title ?? "", image: fullImage, loading: fullImageLoading,
+      failed: fullImageFailed, close: { showsLarge = false })
+  }
+
+  private func openLargePreview() {
+    guard let selected else { return }
+    fullImage = nil
+    fullImageFailed = false
+    fullImageLoading = true
+    showsLarge = true
+    Task { @MainActor in
+      let image = await game.galleryFullImage(selected)
+      guard !Task.isCancelled, showsLarge else { return }
+      fullImage = image
+      fullImageFailed = image == nil
+      fullImageLoading = false
+    }
+  }
+}
+
+/// Full-window CG viewer. Pinch (or trackpad magnification) zooms, dragging pans,
+/// and a double-click returns to the fitted size. The decoded image is bounded
+/// by the same loader as thumbnails, just at a larger (not original) pixel size.
+struct CGViewer: View {
+  let title: String
+  let image: Image?
+  let loading: Bool
+  let failed: Bool
+  let close: () -> Void
+  @State private var scale: CGFloat = 1
+  @State private var settledScale: CGFloat = 1
+  @State private var offset: CGSize = .zero
+  @State private var settledOffset: CGSize = .zero
+
+  var body: some View {
+    ZStack {
+      Color.black.ignoresSafeArea()
+      if let image {
+        GeometryReader { proxy in
+          image.resizable().scaledToFit()
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .scaleEffect(scale)
+            .offset(offset)
+            .contentShape(Rectangle())
+            .gesture(
+              MagnificationGesture()
+                .onChanged { value in
+                  scale = min(4, max(1, settledScale * value))
+                }
+                .onEnded { _ in
+                  settledScale = scale
+                  if scale <= 1.001 {
+                    scale = 1
+                    settledScale = 1
+                    offset = .zero
+                    settledOffset = .zero
+                  }
+                }
+            )
+            .simultaneousGesture(
+              DragGesture()
+                .onChanged { value in
+                  guard scale > 1 else { return }
+                  offset = CGSize(
+                    width: settledOffset.width + value.translation.width,
+                    height: settledOffset.height + value.translation.height)
+                }
+                .onEnded { _ in settledOffset = offset }
+            )
+            .onTapGesture(count: 2) { resetZoom() }
+        }
+        .accessibilityHidden(true)
+      } else if loading {
+        ProgressView("正在载入大图…").tint(.white).foregroundStyle(.white)
+      } else if failed {
+        VStack(spacing: 10) {
+          Image(systemName: "photo.badge.exclamationmark").font(.largeTitle)
+          Text("大图暂不可用，仍可在预览中查看。").font(.callout)
+        }.foregroundStyle(.white.opacity(0.8))
+      }
+      VStack(spacing: 0) {
+        HStack(spacing: 12) {
+          Text(title).font(.headline).foregroundStyle(.white).lineLimit(1)
+          Spacer(minLength: 8)
+          Button(action: resetZoom) {
+            Label("适应窗口", systemImage: "arrow.down.right.and.arrow.up.left")
+              .font(.callout.weight(.medium))
+              .padding(.horizontal, 12).padding(.vertical, 7)
+              .background(.white.opacity(0.14), in: Capsule())
+              .foregroundStyle(.white)
+          }
+          .buttonStyle(.plain)
+          .accessibilityIdentifier("cg-viewer-fit")
+          Button(action: close) {
+            Label("关闭", systemImage: "xmark")
+              .font(.callout.weight(.semibold))
+              .padding(.horizontal, 14).padding(.vertical, 7)
+              .background(.white, in: Capsule())
+              .foregroundStyle(.black)
+          }
+          .buttonStyle(.plain)
+          .accessibilityIdentifier("cg-viewer-close")
+        }
+        .padding(.horizontal, 18).padding(.vertical, 12)
+        .background(.black.opacity(0.35))
+        Spacer()
+      }
+    }
+    .preferredColorScheme(.dark)
+  }
+
+  private func resetZoom() {
+    withAnimation(.easeOut(duration: 0.18)) {
+      scale = 1
+      settledScale = 1
+      offset = .zero
+      settledOffset = .zero
     }
   }
 }
@@ -184,14 +337,17 @@ private struct CollectionTile: View {
   var body: some View {
     Button(action: open) {
       VStack(alignment: .leading, spacing: 10) {
-        ZStack {
+        ZStack(alignment: .bottomTrailing) {
           Rectangle().fill(GameTheme.surface)
           if !entry.unlocked {
             Image(systemName: "lock").font(.title2).foregroundStyle(GameTheme.text)
-          } else if replay {
-            Image(systemName: "play.rectangle").font(.largeTitle).foregroundStyle(GameTheme.accent)
           } else if let thumbnail, thumbnailGeneration == game.collectionGeneration {
             thumbnail.resizable().scaledToFit()
+          } else if replay && entry.preview == nil {
+            VStack(spacing: 6) {
+              Image(systemName: "play.rectangle").font(.largeTitle)
+              Text("暂无预览").font(.caption)
+            }.foregroundStyle(GameTheme.accent)
           } else if unavailable, thumbnailGeneration == game.collectionGeneration {
             VStack(spacing: 6) {
               Image(systemName: "photo").font(.title2)
@@ -199,6 +355,12 @@ private struct CollectionTile: View {
             }.foregroundStyle(.secondary)
           } else {
             ProgressView().controlSize(.small)
+          }
+          if replay && entry.unlocked {
+            Image(systemName: "play.fill")
+              .font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
+              .padding(7).background(.black.opacity(0.45), in: Circle())
+              .padding(8).accessibilityHidden(true)
           }
         }
         .aspectRatio(16 / 9, contentMode: .fit)
@@ -221,8 +383,14 @@ private struct CollectionTile: View {
       unavailable = false
       thumbnailGeneration = nil
       let generation = game.collectionGeneration
-      guard entry.unlocked, !replay else { return }
-      let result = await game.galleryThumbnail(entry)
+      guard entry.unlocked else { return }
+      if replay && entry.preview == nil {
+        unavailable = true
+        thumbnailGeneration = generation
+        return
+      }
+      let result =
+        replay ? await game.replayThumbnail(entry) : await game.galleryThumbnail(entry)
       guard !Task.isCancelled, generation == game.collectionGeneration else { return }
       thumbnailGeneration = generation
       thumbnail = result
@@ -281,8 +449,10 @@ struct Backlog: View {
                   GroupBox {
                     VStack(alignment: .leading, spacing: 8) {
                       HStack(alignment: .firstTextBaseline) {
-                        Text(page.interlude ? "人物介绍" : (page.speaker.isEmpty ? "旁白" : page.speaker))
-                          .font(.callout.weight(.semibold))
+                        if page.interlude || !page.speaker.isEmpty {
+                          Text(page.interlude ? "人物介绍" : page.speaker)
+                            .font(.callout.weight(.semibold))
+                        }
                         Spacer()
                         Text("第 \(page.page) 页").font(.caption.monospacedDigit()).foregroundStyle(
                           .secondary)

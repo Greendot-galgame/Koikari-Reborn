@@ -626,6 +626,34 @@ pub unsafe extern "C" fn kr_gallery_image(
         Ok(pointer)
     })
 }
+/// Read encoded bytes for the representative still of an unlocked replay entry.
+/// The preview asset is resolved by the engine from the replay's own scenario;
+/// locked, unknown or preview-less entries fail closed without touching state.
+/// # Safety
+/// Supply a live exclusive main-thread handle, a valid UTF-8 replay ID C string,
+/// and a writable length pointer. Free returned bytes exactly once with
+/// kr_bytes_free and the original length. Failure returns null and zero length,
+/// with details available through kr_error.
+#[no_mangle]
+pub unsafe extern "C" fn kr_replay_image(
+    handle: *mut Host,
+    id: *const c_char,
+    length: *mut usize,
+) -> *mut u8 {
+    run(|| {
+        if length.is_null() {
+            return Err("null replay image length pointer".into());
+        }
+        *length = 0;
+        let h = host(handle)?;
+        let id = string(id)?;
+        let mut bytes = h.engine.replay_image(&id)?.into_boxed_slice();
+        *length = bytes.len();
+        let pointer = bytes.as_mut_ptr();
+        std::mem::forget(bytes);
+        Ok(pointer)
+    })
+}
 /// # Safety
 /// Live exclusive main-thread handle. Returned JSON must be freed.
 #[no_mangle]

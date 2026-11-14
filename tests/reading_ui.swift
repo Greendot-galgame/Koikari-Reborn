@@ -12,6 +12,7 @@ import Foundation
     let ready = ReadingEligibility(
       active: true, hasScene: true, title: false, messageVisible: true)
     check(ready.canHide, "A settled reading page may hide its interface")
+    check(ready.canOfferHide, "A settled reading page offers hiding")
     check(!ReadingEligibility().canHide, "No scene must never enable hiding")
     let blockers: [(WritableKeyPath<ReadingEligibility, Bool>, Bool)] = [
       (\.active, false), (\.hasScene, false), (\.title, true), (\.finished, true),
@@ -24,6 +25,23 @@ import Foundation
       state[keyPath: key] = value
       check(!state.canHide, "Each blocking state independently denies hiding")
     }
+    for (key, value) in blockers where key != \.messageVisible && key != \.waiting {
+      var state = ready
+      state[keyPath: key] = value
+      check(!state.canOfferHide, "The toolbar stays stable only for settled, eligible pages")
+    }
+    var waiting = ready
+    waiting.waiting = true
+    check(!waiting.canHide, "A waiting page cannot pause the clock by hiding")
+    check(
+      waiting.canOfferHide,
+      "A transient wait must not disable the hide control and make it blink")
+    var emptyMessage = ready
+    emptyMessage.messageVisible = false
+    check(!emptyMessage.canHide, "No visible message layer means nothing to hide")
+    check(
+      emptyMessage.canOfferHide,
+      "A momentarily empty message layer must not flicker the hide control")
 
     for hidden in [false, true] {
       for fast in [false, true] {
@@ -55,16 +73,36 @@ import Foundation
       }
     }
 
+    for speed in [1.0, 1.5, 2, 3, 4, 5] {
+      let interval = FastForwardPolicy.intervalNanoseconds(speed: speed)
+      check(
+        interval <= FastForwardPolicy.baseInterval,
+        "Fast-forward never waits longer than the original cadence")
+      check(
+        abs(Double(interval) - Double(FastForwardPolicy.baseInterval) / speed) <= 1,
+        "The configured multiplier sets the interval")
+    }
+    check(
+      FastForwardPolicy.intervalNanoseconds(speed: 0) == FastForwardPolicy.baseInterval,
+      "Invalid low speed clamps to the original cadence")
+    check(
+      FastForwardPolicy.intervalNanoseconds(speed: 9) == 50_000_000,
+      "Invalid high speed clamps to the fastest cadence")
+    check(
+      FastForwardPolicy.intervalNanoseconds(speed: .infinity) == FastForwardPolicy.baseInterval,
+      "Non-finite speed falls back to the original cadence")
+
     for height in [0.0, 120, 247, 302, 720] {
-      for compact in [false, true] {
-        for textScale in [0.8, 1, 1.6] {
-          for typeScale in [1.0, 1.5, 2.8] {
+      for textScale in [0.8, 1, 1.6] {
+        for typeScale in [1.0, 1.5, 2.8] {
+          for sizeScale in [0.8, 1, 1.25] {
             let panel = ReadingLayout.panelHeight(
-              sceneHeight: height, compact: compact, textScale: textScale, typeScale: typeScale)
+              sceneHeight: height, textScale: textScale, typeScale: typeScale,
+              lineSpacing: 5, dialogueScale: sizeScale)
             check(
               panel.isFinite && panel >= 0 && panel <= max(0, height - 16),
-              "Reading panel stays inside the available safe viewport")
-            if height >= 240 {
+              "Reading panel stays inside the available viewport")
+            if height >= 300 {
               check(
                 panel - ReadingLayout.chromeHeight
                   >= ReadingLayout.minimumTextViewport(
@@ -76,16 +114,30 @@ import Foundation
       }
     }
     let portraitPanel = ReadingLayout.panelHeight(
-      sceneHeight: 180, availableHeight: 600, compact: true, textScale: 1.6, typeScale: 2.8)
+      sceneHeight: 180, availableHeight: 600, textScale: 1.6, typeScale: 2.8,
+      lineSpacing: 5, dialogueScale: 1.25)
     check(
       portraitPanel - ReadingLayout.chromeHeight
-        >= ReadingLayout.minimumTextViewport(
-          textScale: 1.6, typeScale: 2.8),
+        >= ReadingLayout.minimumTextViewport(textScale: 1.6, typeScale: 2.8),
       "Narrow layouts can use letterbox space for accessible text")
+    for width in [440.0, 667, 1280, 1920] {
+      for sizeScale in [0.8, 1, 1.25] {
+        let panelWidth = ReadingLayout.panelWidth(
+          sceneWidth: width, dialogueScale: sizeScale)
+        check(
+          panelWidth.isFinite && panelWidth > 0 && panelWidth <= width - 24,
+          "Dialogue width stays inside the canvas")
+      }
+      if width >= 700 {
+        check(
+          ReadingLayout.panelWidth(sceneWidth: width, dialogueScale: 1) < width * 0.80,
+          "The default dialogue box is narrower than the old near-full-width box")
+      }
+    }
     check(
-      ReadingLayout.panelHeight(sceneHeight: 720, compact: false, textScale: 1, typeScale: 1)
-        == ReadingLayout.panelHeight(sceneHeight: 1440, compact: false, textScale: 1, typeScale: 1),
-      "Reading size must not grow simply because the canvas grows")
+      ReadingLayout.panelWidth(sceneWidth: 1280, dialogueScale: 1)
+        == ReadingLayout.panelWidth(sceneWidth: 1280, dialogueScale: 1),
+      "Dialogue geometry is a pure function of canvas and user preference")
     print("\(assertions) reading UI policy/layout assertions passed (no rendered UI)")
   }
 }

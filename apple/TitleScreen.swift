@@ -76,9 +76,6 @@ struct GameTitleScreen: View {
 
   private var header: some View {
     HStack {
-      if isReady {
-        Text("Koikari Reborn").font(.callout.weight(.medium)).foregroundStyle(.secondary)
-      }
       Spacer()
       Button(action: openSettings) { Label("设置", systemImage: "gearshape") }
         .buttonStyle(.bordered).buttonBorderShape(.roundedRectangle)
@@ -96,11 +93,7 @@ struct GameTitleScreen: View {
           .frame(width: compact ? 48 : 64, height: compact ? 48 : 64)
           .background(GameTheme.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
           .accessibilityHidden(true)
-        VStack(alignment: .leading, spacing: 5) {
-          Text("租借男友").font(.title.weight(.semibold)).accessibilityAddTraits(.isHeader)
-          Text("KOIKARI REBORN").font(.caption.weight(.medium)).tracking(1.5)
-            .foregroundStyle(.secondary)
-        }
+        Text("租借男友").font(.title.weight(.semibold)).accessibilityAddTraits(.isHeader)
       }
       Divider()
       VStack(alignment: .leading, spacing: 8) {

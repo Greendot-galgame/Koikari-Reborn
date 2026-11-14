@@ -117,6 +117,10 @@ pub struct GalleryEntry {
     pub title: String,
     pub asset: String,
     pub unlocked: bool,
+    /// Optional representative artwork, resolved from the scenario itself and
+    /// only exposed to the UI as a bounded thumbnail.
+    #[serde(default)]
+    pub preview: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

@@ -52,6 +52,7 @@ struct CollectionEntry: Decodable, Identifiable {
   var title: String
   var asset: String
   var unlocked: Bool
+  var preview: String? = nil
 }
 struct Dialogue: Decodable {
   struct Visual: Decodable {
@@ -222,6 +223,8 @@ struct AudioFailurePolicy {
   @Published var replays: [CollectionEntry] = []
   @Published private(set) var collectionGeneration = UUID()
   private let galleryThumbnails = GameGalleryThumbnails()
+  private let replayThumbnails = GameGalleryThumbnails()
+  private let fullGalleryImages = GameGalleryThumbnails(maximumSide: 1920)
   @Published var videoURL: URL?
   @Published var videoIdentity = UUID()
   private var exportedVideo: VideoClip?
@@ -261,7 +264,7 @@ struct AudioFailurePolicy {
     return !state.title && !state.finished && state.blocked == nil && state.scene.video == nil
       && (state.flow?.waitMs ?? 0) == 0
   }
-  var canHideInterface: Bool {
+  private var readingEligibility: ReadingEligibility {
     ReadingEligibility(
       active: active, hasScene: snapshot != nil, title: snapshot?.title ?? true,
       finished: snapshot?.finished ?? false, blocked: snapshot?.blocked != nil,
@@ -269,8 +272,13 @@ struct AudioFailurePolicy {
       hasVideo: snapshot?.scene.video != nil, hasCredits: snapshot?.scene.credits != nil,
       hasInterlude: snapshot?.interlude != nil, waiting: (snapshot?.flow?.waitMs ?? 0) != 0,
       modalOpen: modalOpen, importing: importing, hasError: error != nil
-    ).canHide
+    )
   }
+  var canHideInterface: Bool { readingEligibility.canHide }
+  /// A stable affordance for the toolbar. `canHideInterface` also follows the
+  /// current page's transient wait/message state, which made the control blink
+  /// while fast-forwarding; this ignores only those short-lived page states.
+  var canOfferHide: Bool { readingEligibility.canOfferHide }
   func hideInterface() {
     stopFastForward()
     guard canHideInterface else { return }
@@ -314,6 +322,16 @@ struct AudioFailurePolicy {
   }
   @Published var textScale = Game.preference("textScale", fallback: 1, range: 0.8...1.6) {
     didSet { UserDefaults.standard.set(textScale, forKey: "textScale") }
+  }
+  @Published var dialogueScale = Game.preference(
+    "dialogueScale", fallback: 1, range: 0.8...1.25
+  ) {
+    didSet { UserDefaults.standard.set(dialogueScale, forKey: "dialogueScale") }
+  }
+  @Published var fastForwardSpeed = Game.preference(
+    "fastForwardSpeed", fallback: 1, range: 1...5
+  ) {
+    didSet { UserDefaults.standard.set(fastForwardSpeed, forKey: "fastForwardSpeed") }
   }
   @Published var dialogueOpacity = Game.preference(
     "dialogueOpacity", fallback: 0.9, range: 0.65...1)
@@ -694,7 +712,8 @@ struct AudioFailurePolicy {
     stopAudio()
     fastTask = Task { [weak self] in
       while !Task.isCancelled {
-        try? await Task.sleep(nanoseconds: 250_000_000)
+        let speed = self?.fastForwardSpeed ?? 1
+        try? await Task.sleep(nanoseconds: FastForwardPolicy.intervalNanoseconds(speed: speed))
         guard let self, !Task.isCancelled, self.fastForward else { return }
         let ok = self.action("advance")
         if !ok || self.error != nil || self.snapshot?.finished == true
@@ -891,8 +910,53 @@ struct AudioFailurePolicy {
     guard !Task.isCancelled, collectionGeneration == generation else { return nil }
     return image
   }
+  /// Replay cards use the still that the engine resolved from the event's own
+  /// script. Locked entries are rejected by the FFI as well as by this guard.
+  func replayThumbnail(_ entry: CollectionEntry) async -> Image? {
+    guard entry.unlocked, entry.preview != nil,
+      replays.contains(where: { $0.id == entry.id && $0.unlocked })
+    else { return nil }
+    let generation = collectionGeneration
+    let image = await replayThumbnails.image(for: "replay:\(entry.id)") { [weak self] in
+      guard let self, self.collectionGeneration == generation, let handle = self.handle,
+        self.replays.contains(where: { $0.id == entry.id && $0.unlocked })
+      else { return nil }
+      var count = 0
+      guard let bytes = entry.id.withCString({ kr_replay_image(handle, $0, &count) }) else {
+        return nil
+      }
+      defer { kr_bytes_free(bytes, count) }
+      guard count > 0, count <= 32 * 1024 * 1024 else { return nil }
+      return Data(bytes: bytes, count: count)
+    }
+    guard !Task.isCancelled, collectionGeneration == generation else { return nil }
+    return image
+  }
+  /// Full-resolution (bounded) CG image for the separate large-image viewer.
+  func galleryFullImage(_ entry: CollectionEntry) async -> Image? {
+    guard entry.unlocked, gallery.contains(where: { $0.id == entry.id && $0.unlocked }) else {
+      return nil
+    }
+    let generation = collectionGeneration
+    let image = await fullGalleryImages.image(for: "full:\(entry.id)") { [weak self] in
+      guard let self, self.collectionGeneration == generation, let handle = self.handle,
+        self.gallery.contains(where: { $0.id == entry.id && $0.unlocked })
+      else { return nil }
+      var count = 0
+      guard let bytes = entry.id.withCString({ kr_gallery_image(handle, $0, &count) }) else {
+        return nil
+      }
+      defer { kr_bytes_free(bytes, count) }
+      guard count > 0, count <= 32 * 1024 * 1024 else { return nil }
+      return Data(bytes: bytes, count: count)
+    }
+    guard !Task.isCancelled, collectionGeneration == generation else { return nil }
+    return image
+  }
   func clearGalleryThumbnails() {
     galleryThumbnails.clear()
+    replayThumbnails.clear()
+    fullGalleryImages.clear()
     collectionGeneration = UUID()
   }
   func showCG(_ entry: CollectionEntry) -> Bool {
@@ -1397,19 +1461,24 @@ struct Content: View {
                 .frame(width: width, height: height)
                 .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
             }
-            if state.scene.messageVisible && state.scene.video == nil && !state.finished
-              && !game.interfaceHidden
-            {
-              let portraitWidth =
-                state.sprites.values.contains { $0.position == "fc" } ? width * 0.20 : 0
-              let panelHeight = ReadingLayout.panelHeight(
-                sceneHeight: height, availableHeight: geometry.size.height,
-                compact: width < 700, textScale: game.textScale,
-                typeScale: readingTypeSize / 18)
+            let panelWidth = ReadingLayout.panelWidth(
+              sceneWidth: width, availableWidth: geometry.size.width,
+              dialogueScale: game.dialogueScale)
+            let panelHeight = ReadingLayout.panelHeight(
+              sceneHeight: height, availableHeight: geometry.size.height,
+              textScale: game.textScale, typeScale: readingTypeSize / 18,
+              lineSpacing: game.dialogueLineSpacing, dialogueScale: game.dialogueScale)
+            let showReadingBox =
+              state.interlude == nil && state.scene.messageVisible
+              && state.scene.video == nil && !state.finished && !game.interfaceHidden
+              && !(state.scene.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && state.scene.speaker.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if showReadingBox {
               GameReadingPanel(
                 speaker: state.scene.speaker, text: state.scene.text, page: state.pages,
                 textScale: game.textScale, backgroundOpacity: game.dialogueOpacity,
-                lineSpacing: game.dialogueLineSpacing, showPageNumber: game.showPageNumber
+                lineSpacing: game.dialogueLineSpacing, showPageNumber: game.showPageNumber,
+                onAdvance: { game.next() }
               ) {
                 if let glyph = game.messageGlyph, let sheet = game.messageGlyphSheet {
                   MessageGlyphView(
@@ -1421,7 +1490,7 @@ struct Content: View {
                 } label: {
                   Label("上一句", systemImage: "chevron.left").labelStyle(.iconOnly)
                 }
-                .buttonStyle(.bordered).controlSize(.large).disabled(game.timeline.isEmpty)
+                .buttonStyle(.bordered).controlSize(.regular).disabled(game.timeline.isEmpty)
                 .keyboardShortcut(.leftArrow, modifiers: [])
                 .accessibilityIdentifier("back").help("上一句（左方向键）")
                 Button {
@@ -1433,20 +1502,18 @@ struct Content: View {
                   )
                   .labelStyle(.iconOnly)
                 }
-                .buttonStyle(.bordered).controlSize(.large).disabled(
+                .buttonStyle(.bordered).controlSize(.regular).disabled(
                   !game.fastForward && !game.canAdvance
                 )
                 .keyboardShortcut(.space, modifiers: [])
                 .accessibilityIdentifier("advance").help("下一句（空格 / 右方向键）")
               }
-              .frame(height: panelHeight)
-              .padding(.leading, portraitWidth)
-              .frame(width: width * 0.94)
+              .frame(width: panelWidth, height: panelHeight)
               .position(
                 x: geometry.size.width / 2,
                 y: min(
                   geometry.size.height - panelHeight / 2 - 8,
-                  max(panelHeight / 2 + 8, top + height - panelHeight / 2 - height * 0.02))
+                  max(panelHeight / 2 + 8, top + height - panelHeight / 2 - height * 0.035))
               )
               .disabled(game.modalOpen || game.importing || game.error != nil)
             }
@@ -1468,16 +1535,24 @@ struct Content: View {
                 }
               }.padding(16)
             }
-            if state.interlude != nil && game.choices.isEmpty && state.scene.video == nil {
-              VStack {
-                Spacer()
-                Button("人物介绍 · 点击继续剧情  ›") { game.next() }
-                  .disabled(!game.canAdvance)
-                  .keyboardShortcut(.space, modifiers: []).accessibilityIdentifier(
-                    "continue-interlude"
-                  )
-                  .buttonStyle(.borderedProminent).controlSize(.large).padding(16)
+            if state.interlude != nil && game.choices.isEmpty && state.scene.video == nil
+              && !state.finished && !game.interfaceHidden
+            {
+              VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                GameInterludePanel(
+                  text: state.scene.text, textScale: game.textScale,
+                  backgroundOpacity: game.dialogueOpacity,
+                  lineSpacing: game.dialogueLineSpacing,
+                  onContinue: { game.next() }
+                )
+                .frame(maxWidth: min(panelWidth, 660))
+                .padding(.horizontal, 20)
+                .padding(.bottom, max(24, height * 0.08))
               }
+              .frame(width: width, height: height)
+              .position(x: geometry.size.width / 2, y: top + height / 2)
+              .allowsHitTesting(!game.modalOpen && !game.importing && game.error == nil)
             }
             if !game.choices.isEmpty {
               GameTheme.text.opacity(0.18).contentShape(Rectangle()).onTapGesture {}
@@ -1774,7 +1849,7 @@ struct Content: View {
       } label: {
         Label("隐藏界面", systemImage: "eye.slash").labelStyle(.iconOnly)
       }
-      .buttonStyle(.bordered).controlSize(.large).disabled(!game.canHideInterface)
+      .buttonStyle(.bordered).controlSize(.large).disabled(!game.canOfferHide)
       .accessibilityIdentifier("hide-interface")
       .help("隐藏界面欣赏画面；再次点击只恢复界面，不翻页")
       #if os(iOS)

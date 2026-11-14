@@ -4,6 +4,7 @@ use crate::model::*;
 use crate::tjs;
 use crate::xp3::{self, Assets, Store};
 use serde_json::Value;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
@@ -20,6 +21,7 @@ pub struct Engine {
     database: Database,
     replay_scenes: Vec<String>,
     transition_speeds: BTreeMap<String, u64>,
+    replay_previews: RefCell<BTreeMap<String, Option<String>>>,
 }
 
 fn merge_progress(target: &mut Progress, source: &Progress) {
@@ -34,6 +36,15 @@ fn sync_globals(state: &mut State) {
             state.flow.variables.insert(key.clone(), value.clone());
         }
     }
+}
+
+fn is_event_cg(name: &str) -> bool {
+    let base = name.rsplit('/').next().unwrap_or(name);
+    let Some(rest) = base.strip_prefix("ev") else {
+        return false;
+    };
+    let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+    digits >= 3 && rest.as_bytes().get(digits) == Some(&b'_')
 }
 
 fn static_value(source: &str) -> Result<Value> {
@@ -219,6 +230,7 @@ impl Engine {
                         title: group.into(),
                         asset: asset.clone(),
                         unlocked: self.state.progress.cg.contains(group),
+                        preview: None,
                     });
             }
         }
@@ -234,6 +246,7 @@ impl Engine {
                 title: e.title.clone(),
                 asset: e.script.clone(),
                 unlocked: self.state.progress.events.contains(&e.script),
+                preview: self.replay_preview(&e.script),
             })
             .collect();
         for script in &self.replay_scenes {
@@ -249,19 +262,118 @@ impl Engine {
                     .progress
                     .events
                     .contains(&format!("scene:{script}")),
+                preview: self.replay_preview(script),
             });
         }
         Ok(entries)
+    }
+    /// Resolve a single replay entry without scanning the whole event database.
+    /// Unknown prefixes and IDs fail closed just like the FFI boundary.
+    fn replay_entry(&self, id: &str) -> Option<GalleryEntry> {
+        if let Some(script) = id.strip_prefix("event:") {
+            let event = self
+                .database
+                .events
+                .iter()
+                .find(|event| event.script == script)?;
+            return Some(GalleryEntry {
+                id: id.into(),
+                title: event.title.clone(),
+                asset: event.script.clone(),
+                unlocked: self.state.progress.events.contains(&event.script),
+                preview: self.replay_preview(&event.script),
+            });
+        }
+        let script = id.strip_prefix("scene:")?;
+        if !self.replay_scenes.iter().any(|scene| scene == script) {
+            return None;
+        }
+        let index = self.database.index(script)?;
+        Some(GalleryEntry {
+            id: id.into(),
+            title: self.database.events[index].title.clone(),
+            asset: script.into(),
+            unlocked: self
+                .state
+                .progress
+                .events
+                .contains(&format!("scene:{script}")),
+            preview: self.replay_preview(script),
+        })
+    }
+    /// Resolve one representative still for a replay card without executing the
+    /// scenario. A CG referenced by the script wins; an early background is the
+    /// fallback. Only verified store assets are returned, and the scan is bounded.
+    /// Results are cached per connected store because previews never depend on
+    /// mutable story progress.
+    fn replay_preview(&self, script: &str) -> Option<String> {
+        if let Some(cached) = self.replay_previews.borrow().get(script) {
+            return cached.clone();
+        }
+        let resolved = self.resolve_replay_preview(script);
+        self.replay_previews
+            .borrow_mut()
+            .insert(script.to_owned(), resolved.clone());
+        resolved
+    }
+    fn resolve_replay_preview(&self, script: &str) -> Option<String> {
+        const SCAN_LIMIT: usize = 2 * 1024 * 1024;
+        let script = self.assets.find(script, &["ks"]).ok()?;
+        let source = self.assets.text(&script).ok()?;
+        if source.is_empty() || source.len() > SCAN_LIMIT {
+            return None;
+        }
+        let mut background = None;
+        for line in source.lines().take(16_000) {
+            let Some(command) = line.trim().strip_prefix('@') else {
+                continue;
+            };
+            let Ok((name, args)) = kag::attributes(command) else {
+                continue;
+            };
+            let candidate = match name.to_ascii_lowercase().as_str() {
+                "bg_image" => args.get("num"),
+                "bgset" | "bgset_withoutblack" | "bgset_interval" => {
+                    args.get("bg").or_else(|| args.get("bg1"))
+                }
+                "bg" | "sc_startprocess" => args.get("bg"),
+                "image" => args.get("storage"),
+                _ => None,
+            };
+            let Some(candidate) = candidate.map(|value| value.trim()) else {
+                continue;
+            };
+            if candidate.is_empty() || candidate.len() > 128 {
+                continue;
+            }
+            let Ok(asset) = self.assets.find(candidate, &["webp", "png"]) else {
+                continue;
+            };
+            let base = candidate.rsplit('/').next().unwrap_or(candidate);
+            if is_event_cg(base) {
+                return Some(asset);
+            }
+            background.get_or_insert(asset);
+        }
+        background
+    }
+    /// Read the already-resolved preview of an unlocked replay entry. The bytes
+    /// stay opaque to the engine and are bounded before allocation.
+    pub fn replay_image(&self, id: &str) -> Result<Vec<u8>> {
+        let entry = self.replay_entry(id).ok_or("replay is locked or unknown")?;
+        if !entry.unlocked {
+            return Err("replay is locked or unknown".into());
+        }
+        let preview = entry.preview.ok_or("replay has no preview image")?;
+        self.assets
+            .bytes_limited(&preview, 32 * 1024 * 1024)
+            .map_err(|error| error.to_string())
     }
     pub fn start_replay(&mut self, id: &str) -> Result<()> {
         if self.state.flow.replay {
             return Err("nested replay is not allowed".into());
         }
-        let entry = self
-            .replay_list()?
-            .into_iter()
-            .find(|e| e.id == id)
-            .ok_or("unknown replay ID")?;
+        let entry = self.replay_entry(id).ok_or("unknown replay ID")?;
         if !entry.unlocked {
             return Err("replay is locked".into());
         }
@@ -378,6 +490,7 @@ impl Engine {
             database,
             replay_scenes,
             transition_speeds,
+            replay_previews: RefCell::new(BTreeMap::new()),
         };
         engine.title()?;
         Ok(engine)

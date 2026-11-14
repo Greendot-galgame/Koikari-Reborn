@@ -16,6 +16,10 @@ struct Settings: View {
             "对白字号", value: $game.textScale, range: 0.8...1.6, step: 0.1,
             display: "\(Int((game.textScale * 100).rounded()))%", identifier: "text-scale")
           slider(
+            "对话框大小", value: $game.dialogueScale, range: 0.8...1.25, step: 0.05,
+            display: "\(Int((game.dialogueScale * 100).rounded()))%",
+            identifier: "dialogue-scale")
+          slider(
             "背景不透明度", value: $game.dialogueOpacity, range: 0.65...1, step: 0.05,
             display: "\(Int((game.dialogueOpacity * 100).rounded()))%",
             identifier: "dialogue-opacity")
@@ -24,6 +28,11 @@ struct Settings: View {
             display: "\(Int(game.dialogueLineSpacing))", identifier: "dialogue-line-spacing")
           Toggle("显示剧情页码", isOn: $game.showPageNumber)
             .accessibilityIdentifier("show-page-number")
+          slider(
+            "快进速度", value: $game.fastForwardSpeed, range: 1...5, step: 0.5,
+            display:
+              "\(game.fastForwardSpeed.formatted(.number.precision(.fractionLength(0...1))))×",
+            identifier: "fast-forward-speed")
         }
 
         Section {
@@ -51,8 +60,9 @@ struct Settings: View {
         Section {
           DisclosureGroup("操作说明") {
             VStack(alignment: .leading, spacing: 8) {
-              Text("长对白可上下滚动。点击画面或下一句继续；快进中再次点击只会停止。")
+              Text("长对白可上下滚动。点击画面、对话框或下一句继续；快进中再次点击只会停止。")
               Text("隐藏界面后，点击画面或按空格只会恢复界面，不会翻页。选项、视频、结局和弹窗会停止快进。")
+              Text("对话框大小与字号只影响对白框，不随人物立绘或对白长度变化。")
               #if os(macOS)
                 Text("空格 / → 下一句　← 上一句　F 快进\n⌘S 存档　Esc 停止快进或显示界面")
               #endif
@@ -65,9 +75,11 @@ struct Settings: View {
         Section {
           Button("恢复默认设置") {
             game.textScale = 1
+            game.dialogueScale = 1
             game.dialogueOpacity = 0.9
             game.dialogueLineSpacing = 5
             game.showPageNumber = false
+            game.fastForwardSpeed = 1
             game.bgmVolume = 0.35
             game.voiceVolume = 1
             game.seVolume = 0.7
@@ -96,8 +108,12 @@ struct Settings: View {
       EmptyView()
     }
     .frame(
-      height: min(160, 112 * max(1, CGFloat(game.textScale) * readingTypeSize / 18))
+      height: min(
+        230,
+        max(150, 190 * CGFloat(game.dialogueScale))
+          * max(1, CGFloat(game.textScale) * readingTypeSize / 18 * 0.7))
     )
+    .padding(.horizontal, max(0, 36 * (1.25 - CGFloat(game.dialogueScale))))
     .accessibilityIdentifier("reading-preview")
   }
 
