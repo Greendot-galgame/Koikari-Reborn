@@ -3,9 +3,9 @@ import ImageIO
 import SwiftUI
 import os
 
-/// A lazy, serialized thumbnail pipeline. The reader stays on MainActor; only owned bytes
-/// and an immutable CGImage cross to/from the decoder. No Host or FFI handle is retained
-/// by detached work. Call clear() whenever the connected game or gallery unlock state resets.
+/// A lazy, serialized thumbnail pipeline. Preparation stays on MainActor; owned work and
+/// bytes cross to the worker, which renders and decodes within one serialized turn. Work
+/// must never capture a live Host. Call clear() whenever the connected game or content resets.
 @MainActor
 final class GameGalleryThumbnails {
   nonisolated static let encodedByteLimit = 32 * 1024 * 1024
@@ -14,6 +14,9 @@ final class GameGalleryThumbnails {
   nonisolated static let thumbnailSide = 384
   nonisolated static let cacheByteLimit = 16 * 1024 * 1024
   nonisolated static let cacheEntryLimit = 32
+
+  /// Synchronous owned work, invoked once off-main after lazy MainActor preparation.
+  typealias Work = @Sendable () -> Data?
 
   /// The injectable decoder supports gated synthetic tests. Production always uses ImageIO.
   typealias Decoder = @Sendable (Data) async -> CGImage?
@@ -27,13 +30,13 @@ final class GameGalleryThumbnails {
   private final class Request {
     let id: String
     let generation: UUID
-    var read: (@MainActor () -> Data?)?
+    var prepare: (@MainActor () -> Work?)?
     var waiters: [UUID: Waiter] = [:]
 
-    init(id: String, generation: UUID, read: @escaping @MainActor () -> Data?) {
+    init(id: String, generation: UUID, prepare: @escaping @MainActor () -> Work?) {
       self.id = id
       self.generation = generation
-      self.read = read
+      self.prepare = prepare
     }
   }
 
@@ -60,6 +63,19 @@ final class GameGalleryThumbnails {
   }
 
   func image(for id: String, read: @escaping @MainActor () -> Data?) async -> Image? {
+    await image(
+      for: id,
+      prepare: {
+        // A legacy reader can borrow mutable Host storage. Snapshot it on MainActor,
+        // before yielding or allowing any subsequent Host operation to change the bytes.
+        guard let owned = Self.ownedData(read()) else { return nil }
+        return { owned }
+      })
+  }
+
+  // Prefer the legacy reader for existing unlabeled trailing closures returning nil.
+  @_disfavoredOverload
+  func image(for id: String, prepare: @escaping @MainActor () -> Work?) async -> Image? {
     guard !Task.isCancelled else { return nil }
     if let entry = cache[id] {
       touch(id)
@@ -79,7 +95,7 @@ final class GameGalleryThumbnails {
         if let request = pending[id] {
           request.waiters[waiterID] = waiter
         } else {
-          let request = Request(id: id, generation: generation, read: read)
+          let request = Request(id: id, generation: generation, prepare: prepare)
           request.waiters[waiterID] = waiter
           pending[id] = request
           queue.append(request)
@@ -111,7 +127,7 @@ final class GameGalleryThumbnails {
     pending.removeAll(keepingCapacity: false)
     queue.removeAll(keepingCapacity: false)
     for request in invalidated {
-      request.read = nil
+      request.prepare = nil
       finish(request, with: nil)
     }
     // Intentionally keep worker alive. Synchronous ImageIO cannot be cancelled. Fresh
@@ -123,13 +139,17 @@ final class GameGalleryThumbnails {
       let request = queue.removeFirst()
       discardCancelledWaiters(in: request)
       guard isCurrent(request) else { continue }
-      guard let owned = readOwnedData(for: request) else {
+      guard let work = prepareWork(for: request) else {
         complete(request, image: nil)
         continue
       }
-      // The detached closure captures neither the reader nor any request/Host object.
+      // No prepare closure, request or live Host crosses to the worker. Rendering and
+      // decoding share one turn; clear/cancellation must preserve this serialization tail.
       let decoder = decoder
-      let decoded = await Task.detached(priority: .utility) { await decoder(owned) }.value
+      let decoded = await Task.detached(priority: .utility) {
+        guard let owned = Self.ownedData(work()) else { return nil as CGImage? }
+        return await decoder(owned)
+      }.value
       discardCancelledWaiters(in: request)
       guard isCurrent(request) else { continue }
       complete(request, image: decoded.flatMap { insert($0, for: request.id) })
@@ -137,16 +157,19 @@ final class GameGalleryThumbnails {
     worker = nil
   }
 
-  private func readOwnedData(for request: Request) -> Data? {
-    // Read only at the front of the queue. Release the original data and reader before
-    // suspending for decode; an explicit copy owns even a borrowed/no-copy FFI buffer.
-    let read = request.read
-    request.read = nil
-    let data = read?()
+  private func prepareWork(for request: Request) -> Work? {
+    // Prepare only at the front of the queue and release the MainActor closure before
+    // suspending. A preparation that reenters clear/cancellation abandons its owned work.
+    let prepare = request.prepare
+    request.prepare = nil
+    let work = prepare?()
     discardCancelledWaiters(in: request)
-    guard let data, isCurrent(request),
-      !data.isEmpty, data.count <= Self.encodedByteLimit
-    else { return nil }
+    guard isCurrent(request) else { return nil }
+    return work
+  }
+
+  nonisolated private static func ownedData(_ data: Data?) -> Data? {
+    guard let data, !data.isEmpty, data.count <= encodedByteLimit else { return nil }
     return data.withUnsafeBytes { Data(bytes: $0.baseAddress!, count: $0.count) }
   }
 
@@ -175,7 +198,7 @@ final class GameGalleryThumbnails {
     guard request.waiters.isEmpty, isCurrent(request) else { return }
     pending.removeValue(forKey: request.id)
     queue.removeAll { $0 === request }
-    request.read = nil
+    request.prepare = nil
     // Never cancel the worker or detached decode. If already active, this request's
     // result is discarded, but the next request still waits for actual decode completion.
   }

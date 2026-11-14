@@ -17,6 +17,9 @@
     @Published var handle: Int?
     @Published var hasSave: Bool
     @Published var slots: [SaveSlot] = []
+    @Published var savePreviewGeneration = UUID()
+    private let saveThumbnails = GameGalleryThumbnails()
+    var saveThumbnailUnavailable = false
     @Published var gallery: [CollectionEntry] = []
     @Published var replays: [CollectionEntry] = []
     @Published var timeline: [PastPage] = []
@@ -50,7 +53,8 @@
         slots = [
           SaveSlot(
             slot: 9, exists: true, compatible: true, savedAt: 1_790_000_000_000,
-            pages: 128, speaker: "阅读预览", text: "明天见。故事会在这里，等待你回来。", error: nil)
+            pages: 128, speaker: "阅读预览", text: "明天见。故事会在这里，等待你回来。", error: nil,
+            previewRevision: String(repeating: "a", count: 64))
         ]
       }
     }
@@ -66,11 +70,60 @@
       guard entry.unlocked, !thumbnailUnavailable else { return nil }
       return await thumbnails.image(for: entry.id) { Self.syntheticImage(entry.id) }
     }
+    func beginSavePreviews() {}
+    func endSavePreviews() { clearSaveThumbnails() }
+    func clearSaveThumbnails() {
+      saveThumbnails.clear()
+      savePreviewGeneration = UUID()
+    }
+    func reloadSaves() { clearSaveThumbnails() }
+    func saveThumbnail(_ slot: SaveSlot) async -> Image? {
+      guard slot.exists, slot.compatible, let revision = slot.previewRevision,
+        !saveThumbnailUnavailable
+      else { return nil }
+      return await saveThumbnails.image(
+        for: "\(slot.slot):\(revision)",
+        read: {
+          Self.syntheticSaveImage(slot.slot)
+        })
+    }
+    private static func syntheticSaveImage(_ slot: Int) -> Data? {
+      let image = NSImage(size: NSSize(width: 384, height: 216), flipped: false) { rect in
+        NSColor(calibratedRed: 0.85, green: 0.92, blue: 0.97, alpha: 1).setFill()
+        rect.fill()
+        NSColor(calibratedRed: 0.70, green: 0.80, blue: 0.73, alpha: 1).setFill()
+        NSRect(x: 0, y: 0, width: 384, height: 80).fill()
+        NSColor(calibratedRed: 0.93, green: 0.89, blue: 0.82, alpha: 1).setFill()
+        NSRect(x: 30, y: 60, width: 150, height: 120).fill()
+        NSColor(calibratedRed: 0.60, green: 0.68, blue: 0.76, alpha: 1).setFill()
+        NSRect(x: 44, y: 112, width: 120, height: 52).fill()
+        let x = 235 + CGFloat(slot % 3) * 10
+        NSColor(calibratedRed: 0.64, green: 0.57, blue: 0.72, alpha: 1).setFill()
+        NSBezierPath(
+          roundedRect: NSRect(x: x, y: 36, width: 54, height: 83), xRadius: 14, yRadius: 14
+        ).fill()
+        NSColor(calibratedRed: 0.94, green: 0.82, blue: 0.73, alpha: 1).setFill()
+        NSBezierPath(ovalIn: NSRect(x: x + 8, y: 110, width: 38, height: 38)).fill()
+        NSColor.white.withAlphaComponent(0.88).setFill()
+        NSRect(x: 0, y: 0, width: 384, height: 30).fill()
+        ("存档画面 · 合成夹具" as NSString).draw(
+          at: NSPoint(x: 12, y: 7),
+          withAttributes: [
+            .font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.darkGray,
+          ])
+        return true
+      }
+      guard let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff) else {
+        return nil
+      }
+      return bitmap.representation(using: .png, properties: [:])
+    }
     func populateLibrary() {
       slots += [
         SaveSlot(
           slot: 1, exists: true, compatible: true, savedAt: 1_789_800_000_000,
-          pages: 64, speaker: "示例角色", text: "阳光从窗边落进来，新的故事正要开始。", error: nil),
+          pages: 64, speaker: "示例角色", text: "阳光从窗边落进来，新的故事正要开始。", error: nil,
+          previewRevision: String(repeating: "b", count: 64)),
         SaveSlot(
           slot: 2, exists: true, compatible: false, savedAt: 0, pages: 0,
           speaker: "", text: "", error: "存档与当前资源不匹配。"),
@@ -80,7 +133,7 @@
         SaveSlot(
           slot: 4, exists: true, compatible: true, savedAt: 1_789_900_000_000,
           pages: 92, speaker: "旁白", text: "很长的合成存档摘要，用来检查卡片中的文字换行。更多的文字只会折叠在摘要中，不会挤走操作按钮。",
-          error: nil),
+          error: nil, previewRevision: String(repeating: "c", count: 64)),
         SaveSlot(
           slot: 5, exists: false, compatible: false, savedAt: 0, pages: 0,
           speaker: "", text: "", error: nil),
@@ -245,6 +298,36 @@
       try render(
         SaveManager(game: fullHistory, saving: true), name: "saves-disabled", width: 720,
         height: 620, output: output)
+      let unavailableSave = Game(ready: true, saved: true)
+      unavailableSave.populateLibrary()
+      unavailableSave.saveThumbnailUnavailable = true
+      try render(
+        SaveManager(game: unavailableSave, saving: false), name: "saves-preview-unavailable",
+        width: 720, height: 620, output: output)
+      unavailableSave.saveThumbnailUnavailable = false
+      unavailableSave.slots[0].previewRevision = nil
+      try render(
+        SaveManager(game: unavailableSave, saving: false), name: "saves-preview-missing-revision",
+        width: 390, height: 640, output: output)
+      try render(
+        SaveManager(game: unavailableSave, saving: false).dynamicTypeSize(.accessibility2),
+        name: "saves-accessibility", width: 390, height: 640, output: output)
+      for (name, width) in [("game-menu-ipad", 480.0), ("game-menu-compact", 390.0)] {
+        try render(
+          GameplayMenuSheet(
+            muted: false, hasVoice: true, hasLibrary: true, select: { _ in }, close: {}),
+          name: name, width: width, height: 620, output: output)
+      }
+      try render(
+        GameplayMenuSheet(
+          muted: true, hasVoice: false, hasLibrary: false, select: { _ in }, close: {}),
+        name: "game-menu-unavailable", width: 390, height: 620, output: output)
+      try render(
+        GameplayMenuSheet(
+          muted: false, hasVoice: true, hasLibrary: true, select: { _ in }, close: {}
+        )
+        .dynamicTypeSize(.accessibility2),
+        name: "game-menu-accessibility", width: 390, height: 640, output: output)
       for (name, width, height, scale) in [
         ("dialogue-compact", 440.0, 154.0, 1.0),
         ("dialogue-large-text", 440.0, 210.0, 1.6),

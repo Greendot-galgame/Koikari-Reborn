@@ -109,11 +109,13 @@ struct SaveSlot: Decodable, Identifiable {
   var speaker: String
   var text: String
   var error: String?
+  var previewRevision: String? = nil
   var id: Int { slot }
   var name: String { slot == 9 ? "自动进度" : "手动槽位 \(slot)" }
   enum CodingKeys: String, CodingKey {
     case slot, exists, compatible, pages, speaker, text, error
     case savedAt = "saved_at"
+    case previewRevision = "preview_revision"
   }
 }
 
@@ -194,6 +196,9 @@ struct AudioFailurePolicy {
   }
   @Published var hasSave = false
   @Published var slots: [SaveSlot] = []
+  @Published private(set) var savePreviewGeneration = UUID()
+  private let saveThumbnails = GameGalleryThumbnails()
+  private var savePreviewsVisible = false
   @Published var timeline: [PastPage] = []
   @Published var fastForward = false
   @Published private(set) var interfaceHidden = false
@@ -442,6 +447,8 @@ struct AudioFailurePolicy {
     }
     stopFastForward()
     clearGalleryThumbnails()
+    clearSaveThumbnails()
+    slots.removeAll()
     gallery.removeAll()
     replays.removeAll()
     if let old = handle { kr_close(old) }
@@ -572,6 +579,7 @@ struct AudioFailurePolicy {
     importDetail = "正在取消导入…"
   }
   func reloadSaves() {
+    clearSaveThumbnails()
     guard let handle else { return }
     guard let json = kr_saves(handle) else {
       error = "存档列表读取失败：\(rustError())"
@@ -583,6 +591,38 @@ struct AudioFailurePolicy {
       hasSave = slots.contains { $0.compatible }
     } catch { self.error = "存档列表读取失败：\(error.localizedDescription)" }
   }
+  // Prepare an immutable lease from the exact saved file, not from the live scene.
+  // GPU work and PNG decoding stay on the cancellable serial thumbnail worker.
+  func saveThumbnail(_ slot: SaveSlot) async -> Image? {
+    guard slot.exists, slot.compatible, let revision = slot.previewRevision,
+      let number = UInt32(exactly: slot.slot),
+      slots.contains(where: {
+        $0.slot == slot.slot && $0.compatible && $0.previewRevision == revision
+      })
+    else { return nil }
+    let generation = savePreviewGeneration
+    let image = await saveThumbnails.image(
+      for: "\(slot.slot):\(revision)",
+      prepare: { [weak self] in
+        guard let self, self.savePreviewGeneration == generation, let handle = self.handle,
+          self.slots.contains(where: {
+            $0.slot == slot.slot && $0.compatible && $0.previewRevision == revision
+          })
+        else { return nil }
+        return SaveThumbnailReader.prepare(handle: handle, slot: number, revision: revision)
+      })
+    guard !Task.isCancelled, savePreviewGeneration == generation else { return nil }
+    return image
+  }
+  func beginSavePreviews() { savePreviewsVisible = true }
+  func endSavePreviews() {
+    savePreviewsVisible = false
+    clearSaveThumbnails()
+  }
+  func clearSaveThumbnails() {
+    saveThumbnails.clear()
+    savePreviewGeneration = UUID()
+  }
   @discardableResult func autoSave() -> Bool {
     guard let handle, let state = snapshot, !state.title, state.blocked == nil else { return false }
     if "save:9".withCString({ kr_action(handle, $0) }) == 0 {
@@ -591,6 +631,9 @@ struct AudioFailurePolicy {
     } else {
       saveWarning = nil
       hasSave = true
+      // Audio interruptions can autosave while this sheet stays visible/active.
+      // Refresh its exact-byte revision, but never reread all slots per ordinary page.
+      if savePreviewsVisible { reloadSaves() } else { clearSaveThumbnails() }
       return true
     }
   }
@@ -1305,6 +1348,7 @@ struct Content: View {
   @State private var newGame = false
   @State private var showCollection = false
   @State private var collectionIsReplay = false
+  @State private var gameplayMenu = GameplayMenuPresentation()
   @Environment(\.scenePhase) private var phase
   @ScaledMetric(relativeTo: .body) private var readingTypeSize: CGFloat = 18
   private var title: Bool { game.snapshot?.title ?? true }
@@ -1532,6 +1576,18 @@ struct Content: View {
     }
     .foregroundStyle(GameTheme.text).tint(GameTheme.accent)
     .background(GameTheme.background).preferredColorScheme(.light)
+    #if os(iOS)
+      .background {
+        // Keep external-keyboard save available without a transient UIKit Menu.
+        Button("存档") {
+          openSaves(saving: true)
+          synchronizeModalState()
+        }
+        .keyboardShortcut("s", modifiers: .command)
+        .disabled(title || game.interfaceHidden || hasPresentedModal || game.importing)
+        .hidden().allowsHitTesting(false).accessibilityHidden(true)
+      }
+    #endif
     .overlay(alignment: .top) {
       if let text = game.saveWarning ?? game.notice {
         Text(text).font(.caption).padding(10).background(.regularMaterial, in: Capsule())
@@ -1590,6 +1646,21 @@ struct Content: View {
       Button("开始新游戏", role: .destructive) { game.action("new") }
       Button("取消", role: .cancel) {}
     }
+    #if os(iOS)
+      .sheet(
+        isPresented: Binding(
+          get: { gameplayMenu.isPresented },
+          set: { if !$0 { gameplayMenu.dismiss() } }),
+        onDismiss: finishGameplayMenu
+      ) {
+        GameplayMenuSheet(
+          muted: game.muted,
+          hasVoice: !(game.snapshot?.scene.voice.asset.isEmpty ?? true),
+          hasLibrary: game.handle != nil,
+          select: { _ = gameplayMenu.select($0) },
+          close: { gameplayMenu.dismiss() })
+      }
+    #endif
     .sheet(isPresented: $showSaves) {
       SaveManager(game: game, saving: saving)
     }
@@ -1615,18 +1686,13 @@ struct Content: View {
     }
     .onAppear {
       game.sceneActivityChanged(phase == .active)
+      synchronizeModalState()
       #if os(macOS)
         game.applicationActivityChanged(NSApplication.shared.isActive)
       #endif
     }
     .onChange(of: phase) { game.sceneActivityChanged($0 == .active) }
-    .onChange(
-      of: importing || showHistory || showDiagnostics || returnToTitle || showSaves || showSettings
-        || newGame || showCollection || game.error != nil
-    ) {
-      game.modalOpen = $0
-      if $0 { game.stopFastForward() } else { game.resumePendingVideo() }
-    }
+    .onChange(of: hasPresentedModal) { _ in synchronizeModalState() }
     #if os(iOS)
       .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification))
       { notification in
@@ -1711,67 +1777,129 @@ struct Content: View {
       .buttonStyle(.bordered).controlSize(.large).disabled(!game.canHideInterface)
       .accessibilityIdentifier("hide-interface")
       .help("隐藏界面欣赏画面；再次点击只恢复界面，不翻页")
-      Menu {
-        Button {
-          openSaves(saving: true)
-        } label: {
-          Label("存档", systemImage: "square.and.arrow.down")
+      #if os(iOS)
+        Button(action: openGameplayMenu) {
+          Label("菜单", systemImage: "line.3.horizontal")
+            .labelStyle(GameToolbarLabelStyle(compact: !showBrand))
         }
-        .keyboardShortcut("s", modifiers: .command).accessibilityIdentifier("save")
-        Button {
-          openSaves(saving: false)
+        .buttonStyle(.bordered).controlSize(.large)
+        .accessibilityIdentifier("compact-game-menu").accessibilityLabel("游戏菜单")
+      #else
+        Menu {
+          Button {
+            openSaves(saving: true)
+          } label: {
+            Label("存档", systemImage: "square.and.arrow.down")
+          }
+          .keyboardShortcut("s", modifiers: .command).accessibilityIdentifier("save")
+          Button {
+            openSaves(saving: false)
+          } label: {
+            Label("读档", systemImage: "tray.and.arrow.up")
+          }
+          .accessibilityIdentifier("load")
+          Divider()
+          Button {
+            game.replayVoice()
+          } label: {
+            Label("重播语音", systemImage: "speaker.wave.2")
+          }
+          .disabled(game.snapshot?.scene.voice.asset.isEmpty ?? true)
+          Button {
+            game.toggleMute()
+          } label: {
+            Label(
+              game.muted ? "取消静音" : "静音",
+              systemImage: game.muted ? "speaker.wave.2" : "speaker.slash"
+            )
+          }
+          Button {
+            showSettings = true
+          } label: {
+            Label("设置", systemImage: "slider.horizontal.3")
+          }
+          .accessibilityIdentifier("settings")
+          Divider()
+          Button("CG 鉴赏") { openCollection(replay: false) }.disabled(game.handle == nil)
+          Button("场景回想") { openCollection(replay: true) }.disabled(game.handle == nil)
+          Button("兼容状态") { showDiagnostics = true }
+          #if os(macOS)
+            Button("切换全屏") { NSApp.keyWindow?.toggleFullScreen(nil) }
+              .keyboardShortcut("f", modifiers: [.command, .control])
+          #endif
+          Divider()
+          Button {
+            returnToTitle = true
+          } label: {
+            Label("返回标题", systemImage: "house")
+          }
         } label: {
-          Label("读档", systemImage: "tray.and.arrow.up")
+          Label("菜单", systemImage: "line.3.horizontal")
+            .labelStyle(GameToolbarLabelStyle(compact: !showBrand))
+            .font(.callout.weight(.medium)).padding(.horizontal, 12).frame(minHeight: 44)
         }
-        .accessibilityIdentifier("load")
-        Divider()
-        Button {
-          game.replayVoice()
-        } label: {
-          Label("重播语音", systemImage: "speaker.wave.2")
-        }
-        .disabled(game.snapshot?.scene.voice.asset.isEmpty ?? true)
-        Button {
-          game.toggleMute()
-        } label: {
-          Label(
-            game.muted ? "取消静音" : "静音", systemImage: game.muted ? "speaker.wave.2" : "speaker.slash"
-          )
-        }
-        Button {
-          showSettings = true
-        } label: {
-          Label("设置", systemImage: "slider.horizontal.3")
-        }
-        .accessibilityIdentifier("settings")
-        Divider()
-        Button("CG 鉴赏") { openCollection(replay: false) }.disabled(game.handle == nil)
-        Button("场景回想") { openCollection(replay: true) }.disabled(game.handle == nil)
-        Button("兼容状态") { showDiagnostics = true }
-        #if os(macOS)
-          Button("切换全屏") { NSApp.keyWindow?.toggleFullScreen(nil) }
-            .keyboardShortcut("f", modifiers: [.command, .control])
-        #endif
-        Divider()
-        Button {
-          returnToTitle = true
-        } label: {
-          Label("返回标题", systemImage: "house")
-        }
-      } label: {
-        Label("菜单", systemImage: "line.3.horizontal")
-          .labelStyle(GameToolbarLabelStyle(compact: !showBrand))
-          .font(.callout.weight(.medium)).padding(.horizontal, 12).frame(minHeight: 44)
-      }
-      .menuStyle(.automatic)
-      .fixedSize()
-      .accessibilityIdentifier("compact-game-menu").accessibilityLabel("游戏菜单")
+        .menuStyle(.automatic)
+        .fixedSize()
+        .accessibilityIdentifier("compact-game-menu").accessibilityLabel("游戏菜单")
+      #endif
+    }
+  }
+
+  private var hasPresentedModal: Bool {
+    importing || showHistory || showDiagnostics || returnToTitle || showSaves || showSettings
+      || newGame || showCollection || game.error != nil || gameplayMenu.blocksGameplay
+  }
+
+  private func synchronizeModalState() {
+    let blocked = hasPresentedModal
+    if game.modalOpen != blocked { game.modalOpen = blocked }
+    if blocked { game.stopFastForward() } else { game.resumePendingVideo() }
+  }
+
+  private func openGameplayMenu() {
+    guard !hasPresentedModal, !game.importing, !game.modalOpen,
+      gameplayMenu.present()
+    else { return }
+    // Synchronous, before UIKit presents: no tick/fast-forward may replace the
+    // menu's anchor or advance the story underneath the player's selection.
+    synchronizeModalState()
+  }
+
+  private func finishGameplayMenu() {
+    let action = gameplayMenu.didDismiss()
+    // An error/import/another presentation may arrive during the dismissal animation.
+    // Never dispatch a stale selection over that new blocker.
+    guard !hasPresentedModal, !game.importing else {
+      synchronizeModalState()
+      return
+    }
+    // Open the destination only after UIKit releases the menu presenter. Set
+    // destination state first so there is no unpaused frame between modals.
+    switch action {
+    case .save: openSaves(saving: true)
+    case .load: openSaves(saving: false)
+    case .settings: showSettings = true
+    case .gallery: openCollection(replay: false)
+    case .replay: openCollection(replay: true)
+    case .diagnostics: showDiagnostics = true
+    case .returnToTitle: returnToTitle = true
+    default: break
+    }
+    synchronizeModalState()
+    // These non-modal actions must run after the modal playback gate is released.
+    switch action {
+    case .replayVoice: game.replayVoice()
+    case .toggleMute: game.toggleMute()
+    default: break
     }
   }
 
   private func openSaves(saving: Bool) {
-    self.saving = saving
+    game.stopFastForward()
+    guard !game.importing, game.error == nil else { return }
     game.reloadSaves()
+    guard game.error == nil else { return }
+    self.saving = saving
     showSaves = true
   }
 

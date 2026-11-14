@@ -2,6 +2,50 @@
 import Foundation
 import ImageIO
 import SwiftUI
+import os
+
+/// Synchronous owned work can be held off-main without timing sleeps or a live Host.
+private final class WorkGate: Sendable {
+  private struct State {
+    var started = false
+    var observers: [CheckedContinuation<Void, Never>] = []
+  }
+  private let state = OSAllocatedUnfairLock(initialState: State())
+  private let releaseSignal = DispatchSemaphore(value: 0)
+
+  func run() {
+    precondition(!Thread.isMainThread, "owned work must execute off-main")
+    let observers = state.withLock { state in
+      state.started = true
+      let observers = state.observers
+      state.observers.removeAll()
+      return observers
+    }
+    for observer in observers { observer.resume() }
+    releaseSignal.wait()
+  }
+
+  func waitForStart() async {
+    await withCheckedContinuation { continuation in
+      let ready = state.withLock { state in
+        if state.started { return true }
+        state.observers.append(continuation)
+        return false
+      }
+      if ready { continuation.resume() }
+    }
+  }
+
+  func release() { releaseSignal.signal() }
+}
+
+private final class WorkLifetime: Sendable {
+  private let released: OSAllocatedUnfairLock<Int>
+
+  init(_ released: OSAllocatedUnfairLock<Int>) { self.released = released }
+  deinit { released.withLock { $0 += 1 } }
+  func keepAlive() {}
+}
 
 /// Each decode stays suspended until explicitly released, so queue/reset tests do not
 /// depend on how quickly ImageIO or the scheduler happens to run on a particular machine.
@@ -61,6 +105,10 @@ struct GalleryThumbnailTests {
     await testCancellationBeforeActorHop()
     await testActiveCancellationAndClear()
     await testOwnedBytes()
+    await testPreparedWorkOrdering()
+    await testPreparedWorkClearAndLifetime()
+    await testAbandonedPreparation()
+    await testPreparedWorkBoundsAndOwnership()
     await testFailures()
     await testClear()
     await testClearAfterCompletion()
@@ -454,6 +502,237 @@ struct GalleryThumbnailTests {
     await gate.release(1)
     let image = await request.value
     check(image != nil, "owned bytes remain valid throughout asynchronous decode")
+  }
+
+  private static func testPreparedWorkOrdering() async {
+    let gate = DecodeGate(image: pixels(width: 8, height: 4))
+    let loader = GameGalleryThumbnails { data in
+      precondition(!Thread.isMainThread, "prepared bytes also decode off-main")
+      return await gate.decode(data)
+    }
+    var prepared: [String] = []
+    let worked = OSAllocatedUnfairLock(initialState: [String]())
+    func prepare(_ id: String, byte: UInt8) -> GameGalleryThumbnails.Work? {
+      MainActor.assertIsolated()
+      prepared.append(id)
+      return {
+        precondition(!Thread.isMainThread, "work cannot render on main")
+        worked.withLock { $0.append(id) }
+        return Data([byte])
+      }
+    }
+    let first = Task { await loader.image(for: "a", prepare: { prepare("a", byte: 1) }) }
+    await gate.waitForStart(1)
+    let duplicate = Task {
+      await loader.image(for: "a", prepare: { preconditionFailure("duplicate cannot prepare") })
+    }
+    await waitForWaiters(2, in: loader)
+    let second = Task { await loader.image(for: "b", prepare: { prepare("b", byte: 2) }) }
+    await waitForWaiters(3, in: loader)
+    let offscreen = Task {
+      await loader.image(
+        for: "offscreen", prepare: { preconditionFailure("cancelled queue cannot prepare") })
+    }
+    await waitForWaiters(4, in: loader)
+    offscreen.cancel()
+    let skipped = await offscreen.value
+    check(
+      skipped == nil && prepared == ["a"], "prepare remains lazy; queued cancellation suppresses it"
+    )
+    check(worked.withLock { $0 } == ["a"], "only front request has invoked owned work")
+    await gate.release(1)
+    await gate.waitForStart(2)
+    check(prepared == ["a", "b"], "next preparation waits for the entire previous decode")
+    check(worked.withLock { $0 } == ["a", "b"], "coalesced work runs only once in FIFO order")
+    await gate.release(2)
+    let firstImage = await first.value
+    let duplicateImage = await duplicate.value
+    let secondImage = await second.value
+    check(
+      firstImage != nil && duplicateImage != nil && secondImage != nil,
+      "prepared requests share results")
+    let cached = await loader.image(
+      for: "a", prepare: { preconditionFailure("cached work cannot prepare") })
+    check(cached != nil && prepared.count == 2, "prepared cache hit bypasses preparation and work")
+    let state = await gate.snapshot()
+    check(
+      state.maximum == 1 && state.inputs == [Data([1]), Data([2])],
+      "prepared decoding remains serial")
+  }
+
+  private static func testPreparedWorkClearAndLifetime() async {
+    let render = WorkGate()
+    let released = OSAllocatedUnfairLock(initialState: 0)
+    let gate = DecodeGate(image: pixels(width: 8, height: 4))
+    let loader = GameGalleryThumbnails { data in await gate.decode(data) }
+    var prepares = 0
+    let old = Task {
+      await loader.image(
+        for: "same-id",
+        prepare: {
+          MainActor.assertIsolated()
+          prepares += 1
+          let lifetime = WorkLifetime(released)
+          return {
+            render.run()
+            lifetime.keepAlive()
+            return Data([1])
+          }
+        })
+    }
+    await render.waitForStart()
+    let queued = Task {
+      await loader.image(
+        for: "cleared", prepare: { preconditionFailure("clear drops queued preparation") })
+    }
+    await waitForWaiters(2, in: loader)
+    old.cancel()
+    let cancelled = await old.value
+    check(cancelled == nil, "last waiter cancels while owned work is active")
+    check(released.withLock { $0 } == 0, "active work retains its lease after cancellation")
+    loader.clear()
+    let queuedImage = await queued.value
+    check(
+      queuedImage == nil && loader.pendingWaiterCount == 0, "clear drops pending prepare closures")
+    let intermediate = Task {
+      await loader.image(
+        for: "intermediate", prepare: { preconditionFailure("repeated clear drops new queue") })
+    }
+    await waitForWaiters(1, in: loader)
+    loader.clear()
+    let intermediateImage = await intermediate.value
+    check(intermediateImage == nil, "repeated clear finishes intermediate waiters")
+    let fresh = Task {
+      await loader.image(
+        for: "same-id",
+        prepare: {
+          MainActor.assertIsolated()
+          prepares += 1
+          return { Data([2]) }
+        })
+    }
+    await waitForWaiters(1, in: loader)
+    let beforeRender = await gate.snapshot()
+    check(
+      prepares == 1 && beforeRender.started == 0, "fresh generation cannot overtake active render")
+    check(released.withLock { $0 } == 0, "clears cannot free a rendering lease")
+    render.release()
+    await gate.waitForStart(1)
+    check(prepares == 1, "fresh preparation also waits for stale render's bounded decode")
+    await gate.release(1)
+    await gate.waitForStart(2)
+    check(
+      prepares == 2 && loader.cachedEntryCount == 0, "stale work cannot populate the fresh cache")
+    check(
+      released.withLock { $0 } == 1, "completed abandoned work releases its captured lease once")
+    await gate.release(2)
+    let freshImage = await fresh.value
+    check(
+      freshImage != nil && loader.cachedEntryCount == 1,
+      "fresh same-id work survives old cancellation")
+    let state = await gate.snapshot()
+    check(
+      state.maximum == 1 && state.started == 2,
+      "render cancellation and repeated clears preserve serialization")
+  }
+
+  private static func testAbandonedPreparation() async {
+    let loader = GameGalleryThumbnails { _ in preconditionFailure("abandoned work cannot decode") }
+    let released = OSAllocatedUnfairLock(initialState: 0)
+    let cleared = await loader.image(
+      for: "clear-in-prepare",
+      prepare: {
+        let lifetime = WorkLifetime(released)
+        loader.clear()
+        return {
+          lifetime.keepAlive()
+          preconditionFailure("reentrant clear must abandon prepared work")
+        }
+      })
+    check(
+      cleared == nil && released.withLock { $0 } == 1,
+      "reentrant clear releases uninvoked prepared work")
+    var request: Task<Image?, Never>?
+    request = Task {
+      await loader.image(
+        for: "cancel-in-prepare",
+        prepare: {
+          let lifetime = WorkLifetime(released)
+          request!.cancel()
+          return {
+            lifetime.keepAlive()
+            preconditionFailure("synchronous cancellation must suppress prepared work")
+          }
+        })
+    }
+    let cancelled = await request!.value
+    check(
+      cancelled == nil && released.withLock { $0 } == 2,
+      "cancellation before actor hop releases prepared work")
+    check(
+      loader.pendingWaiterCount == 0 && loader.cachedEntryCount == 0,
+      "abandoned preparation leaves no results")
+    let preCancelled = Task {
+      await loader.image(
+        for: "already-cancelled",
+        prepare: { preconditionFailure("cancelled caller cannot prepare") })
+    }
+    preCancelled.cancel()
+    let skipped = await preCancelled.value
+    check(
+      skipped == nil && loader.pendingWaiterCount == 0,
+      "pre-cancelled prepared request never queues")
+  }
+
+  private static func testPreparedWorkBoundsAndOwnership() async {
+    let gate = DecodeGate(image: pixels(width: 8, height: 4))
+    let loader = GameGalleryThumbnails { data in await gate.decode(data) }
+    let absent = await loader.image(for: "no-lease", prepare: { nil })
+    let failed = await loader.image(for: "work-error", prepare: { { nil } })
+    let empty = await loader.image(for: "work-empty", prepare: { { Data() } })
+    let huge = await loader.image(
+      for: "work-huge",
+      prepare: {
+        { Data(repeating: 0, count: GameGalleryThumbnails.encodedByteLimit + 1) }
+      })
+    check(
+      absent == nil && failed == nil && empty == nil && huge == nil,
+      "prepare/work errors and invalid lengths fail closed")
+    let initial = await gate.snapshot()
+    check(initial.started == 0, "invalid work data never reaches decoder")
+    // A no-copy Data is Sendable but can still alias external memory. Keep its storage
+    // alive until after decode, and mutate only once the worker has taken its snapshot.
+    let storage = UnsafeMutableRawPointer.allocate(byteCount: 1024, alignment: 1)
+    storage.initializeMemory(as: UInt8.self, repeating: 7, count: 1024)
+    defer { storage.deallocate() }
+    let borrowed = Data(bytesNoCopy: storage, count: 1024, deallocator: .none)
+    let request = Task {
+      await loader.image(for: "borrowed-work", prepare: { { borrowed } })
+    }
+    await gate.waitForStart(1)
+    storage.storeBytes(of: UInt8(9), as: UInt8.self)
+    let state = await gate.snapshot()
+    check(
+      state.inputs.first == Data(repeating: 7, count: 1024),
+      "worker copies even no-copy returned data before decode")
+    await gate.release(1)
+    let image = await request.value
+    check(image != nil, "owned work bytes survive asynchronous decode")
+    let inclusive = Task {
+      await loader.image(
+        for: "work-limit",
+        prepare: {
+          { Data(repeating: 1, count: GameGalleryThumbnails.encodedByteLimit) }
+        })
+    }
+    await gate.waitForStart(2)
+    let bounded = await gate.snapshot()
+    check(
+      bounded.inputs.last?.count == GameGalleryThumbnails.encodedByteLimit,
+      "work data limit accepts exactly 32 MiB")
+    await gate.release(2)
+    let inclusiveImage = await inclusive.value
+    check(inclusiveImage != nil, "inclusive work byte limit decodes successfully")
   }
 
   private static func testFailures() async {

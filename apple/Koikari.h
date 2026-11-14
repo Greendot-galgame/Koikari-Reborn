@@ -1,7 +1,8 @@
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
-// All handle operations are main-thread-only; never share a handle concurrently.
+// All Host operations are main-thread-only; never share a Host concurrently.
+// Explicit immutable-lease worker exceptions are documented below.
 typedef struct Host Host;
 Host *kr_open(const char *directory, const char *save_directory);
 void kr_close(Host *handle);
@@ -10,7 +11,27 @@ char *kr_snapshot(Host *handle);
 void kr_string_free(char *value);
 int32_t kr_action(Host *handle, const char *action);
 int32_t kr_has_save(Host *handle);
+// SaveInfo JSON includes optional preview_revision: lowercase SHA256 of exact
+// bounded validated save bytes; null for unsupported/unsafe preview states.
 char *kr_saves(Host *handle);
+typedef struct SavePreview SavePreview;
+// Main-thread-only capture from the persisted slot, NOT current live scene.
+// Exact-check revision from kr_saves; reject changed/corrupt/incompatible/legacy
+// migration saves and native video/credits/interlude overlays. Readonly: no
+// restore, tick, action, migration, writes or game/progress/gallery mutations.
+// Owns immutable Scene + resource lease; survives Host close and slot overwrite.
+// Failure: NULL / kr_error on the calling main thread.
+SavePreview *kr_save_preview_request(Host *handle, uint32_t slot, const char *revision);
+// Transfer lease to ONE worker with exclusive access. BORROWS, DOES NOT CONSUME.
+// Owned fixed 384x216 PNG, <= 1 MiB: kr_bytes_free(bytes, ORIGINAL length) once.
+// Failure: NULL, zero length (if nonnull), kr_error on this same worker. length
+// must be writable. Dedicated headless renderer; all preview GPU allocations
+// globally serialized through teardown. No Host or live Renderer is referenced.
+uint8_t *kr_save_preview_png(SavePreview *request, size_t *length);
+// Always free exactly once after all png calls finish, including failure/cancel.
+// May free an unused lease on main, or transferred lease on its owning worker.
+// Null-safe; must not race png/free or any other access. png never frees lease.
+void kr_save_preview_free(SavePreview *request);
 char *kr_timeline(Host *handle);
 // Tick: 0 = failure (kr_error), 1 = unchanged, 2 = refresh snapshot.
 // Elapsed time is capped at 1000ms per call; host pauses clock in background/modals.

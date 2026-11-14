@@ -1,4 +1,6 @@
-//! Main-thread-only C bridge. Handles must not be accessed concurrently.
+//! C bridge. Host operations are main-thread-only; immutable asset/preview
+//! leases have explicitly documented worker ownership. Never access a handle
+//! or a lease concurrently.
 use crate::{
     media,
     model::{Layer, Progress, Scene},
@@ -21,6 +23,64 @@ pub struct VideoExport {
     directory: PathBuf,
 }
 static VIDEO_EXPORT_LOCK: Mutex<()> = Mutex::new(());
+
+/// Immutable persisted-scene lease, independent of Host, live renderer and saves.
+/// May be transferred to one worker, which must have exclusive access until done.
+pub struct SavePreview {
+    scene: Scene,
+    assets: Arc<Store>,
+}
+// Keep the guard until the worker's renderer/device AND autoreleased Metal
+// objects are gone. Canceled generations cannot overlap preview GPU allocations.
+static SAVE_PREVIEW_LOCK: Mutex<()> = Mutex::new(());
+const PREVIEW_WIDTH: u32 = 384;
+const PREVIEW_HEIGHT: u32 = 216;
+const PREVIEW_PNG_LIMIT: usize = 1024 * 1024;
+
+impl SavePreview {
+    fn png(&self) -> Result<Vec<u8>, String> {
+        let _serial = SAVE_PREVIEW_LOCK
+            .lock()
+            .map_err(|_| "save preview worker poisoned")?;
+        metal::objc::rc::autoreleasepool(|| {
+            use metal::*;
+            let device =
+                Device::system_default().ok_or("Metal device unavailable for save preview")?;
+            let mut renderer = Renderer::for_save_preview(device.clone())?;
+            let descriptor = TextureDescriptor::new();
+            descriptor.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+            descriptor.set_width(u64::from(PREVIEW_WIDTH));
+            descriptor.set_height(u64::from(PREVIEW_HEIGHT));
+            descriptor.set_usage(MTLTextureUsage::RenderTarget);
+            descriptor.set_storage_mode(MTLStorageMode::Shared);
+            let target = device.new_texture(&descriptor);
+            // Uses the complete immutable Scene, including saved elapsed time,
+            // previous layers and visual commands. Never tick or fast-forward.
+            renderer.render_to_texture(&self.scene, &self.assets, &target)?;
+            let mut rgba = vec![0u8; (PREVIEW_WIDTH * PREVIEW_HEIGHT * 4) as usize];
+            target.get_bytes(
+                rgba.as_mut_ptr().cast(),
+                u64::from(PREVIEW_WIDTH) * 4,
+                MTLRegion::new_2d(0, 0, u64::from(PREVIEW_WIDTH), u64::from(PREVIEW_HEIGHT)),
+                0,
+            );
+            for pixel in rgba.chunks_exact_mut(4) {
+                pixel.swap(0, 2); // Metal BGRA -> PNG RGBA, no live-scene fallback.
+            }
+            let image = image::RgbaImage::from_raw(PREVIEW_WIDTH, PREVIEW_HEIGHT, rgba)
+                .ok_or("invalid preview pixel buffer")?;
+            let mut encoded = std::io::Cursor::new(Vec::new());
+            image
+                .write_to(&mut encoded, image::ImageFormat::Png)
+                .map_err(|e| e.to_string())?;
+            let bytes = encoded.into_inner();
+            if bytes.len() > PREVIEW_PNG_LIMIT {
+                return Err("save preview PNG exceeds 1 MiB".into());
+            }
+            Ok(bytes)
+        })
+    }
+}
 
 pub struct Host {
     engine: Engine,
@@ -422,6 +482,83 @@ pub unsafe extern "C" fn kr_saves(handle: *mut Host) -> *mut c_char {
         ))
     })
 }
+/// Capture a validated persisted save Scene, never the current live scene.
+/// # Safety
+/// Main thread only: handle must be live/exclusive and revision a valid UTF-8 C
+/// string from kr_saves. Returned lease owns only Scene + Arc<Store>; it survives
+/// slot overwrite and Host close. Transfer to ONE worker with exclusive access.
+/// No restoration, migration, tick, action, progress/gallery change or write.
+/// Failure returns null with a main-thread kr_error; no lease was allocated.
+#[no_mangle]
+pub unsafe extern "C" fn kr_save_preview_request(
+    handle: *mut Host,
+    slot: u32,
+    revision: *const c_char,
+) -> *mut SavePreview {
+    run(|| {
+        let h = host(handle)?;
+        let revision = string(revision)?;
+        if revision.len() != 64
+            || !revision
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err("invalid save preview revision".into());
+        }
+        let save = save::read_versioned_record(
+            &h.saves,
+            slot,
+            &h.engine.assets.fingerprint,
+            Some(&revision),
+        )?;
+        save.record.validate_preview()?;
+        // validate_state changes only the program cache, never engine state,
+        // checkpoints, progress, gallery or files. Do not call restore here.
+        h.engine.validate_state(&save.record.state)?;
+        Ok(Box::into_raw(Box::new(SavePreview {
+            scene: save.record.state.scene,
+            assets: h.engine.assets.clone(),
+        })))
+    })
+}
+
+/// Render an owned fixed 384x216 PNG, at most 1 MiB, without a UI window.
+/// # Safety
+/// BORROWS (does not consume) a live lease with exclusive access on ONE worker;
+/// never call/free concurrently. length must be writable. Free successful bytes
+/// once with kr_bytes_free(pointer, original length). Failure returns null/zero;
+/// read thread-local kr_error on this same worker. All preview GPU work is
+/// globally serialized, including renderer teardown and autorelease-pool drain.
+#[no_mangle]
+pub unsafe extern "C" fn kr_save_preview_png(
+    request: *mut SavePreview,
+    length: *mut usize,
+) -> *mut u8 {
+    run(|| {
+        if length.is_null() {
+            return Err("null save preview length pointer".into());
+        }
+        *length = 0;
+        let request = request.as_ref().ok_or("null save preview lease")?;
+        let mut bytes = request.png()?.into_boxed_slice();
+        *length = bytes.len();
+        let pointer = bytes.as_mut_ptr();
+        std::mem::forget(bytes);
+        Ok(pointer)
+    })
+}
+
+/// # Safety
+/// Free a lease exactly once, unconditionally after all png calls have finished
+/// (including failures/cancellation), on its owning thread. Null is safe. Do not
+/// race this with png or any other access. png never consumes the lease.
+#[no_mangle]
+pub unsafe extern "C" fn kr_save_preview_free(request: *mut SavePreview) {
+    if !request.is_null() {
+        let _ = catch_unwind(AssertUnwindSafe(|| drop(Box::from_raw(request))));
+    }
+}
+
 /// # Safety
 /// Live exclusive main-thread handle. Never call while the host is backgrounded.
 #[no_mangle]

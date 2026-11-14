@@ -21,6 +21,9 @@ pub struct SaveInfo {
     pub speaker: String,
     pub text: String,
     pub error: Option<String>,
+    /// SHA256 of the exact bounded, validated save bytes; never a timestamp or
+    /// reserialization. None when the saved scene cannot be previewed faithfully.
+    pub preview_revision: Option<String>,
 }
 
 pub fn catalog(
@@ -41,6 +44,7 @@ pub fn catalog(
                 speaker: String::new(),
                 text: String::new(),
                 error: None,
+                preview_revision: None,
             };
             if info.exists {
                 info.saved_at = path
@@ -50,12 +54,16 @@ pub fn catalog(
                     .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                     .map(|t| t.as_millis().min(u64::MAX as u128) as u64)
                     .unwrap_or(0);
-                match read(directory, slot, fingerprint).and_then(|state| {
-                    validate(&state)?;
-                    Ok(state)
+                match read_versioned_record(directory, slot, fingerprint, None).and_then(|save| {
+                    validate(&save.record.state)?;
+                    Ok(save)
                 }) {
-                    Ok(state) => {
+                    Ok(save) => {
                         info.compatible = true;
+                        if save.record.validate_preview().is_ok() {
+                            info.preview_revision = Some(save.revision);
+                        }
+                        let state = save.record.state;
                         info.pages = state.pages;
                         info.speaker = state.scene.speaker;
                         info.text = state.scene.text.chars().take(160).collect();
@@ -168,7 +176,50 @@ pub struct LoadedSave {
     pub rollback: Vec<State>,
 }
 
+impl LoadedSave {
+    /// Previewing must never migrate a legacy state or guess native overlays.
+    /// Structural and Engine validation are still required independently.
+    pub fn validate_preview(&self) -> Result<(), String> {
+        let state = &self.state;
+        if self.needs_legacy_migration || state.flow.revision != 1 || state.visual_revision != 1 {
+            return Err(
+                "save preview requires current scenario and visual revisions without migration"
+                    .into(),
+            );
+        }
+        if state.title || state.blocked.is_some() {
+            return Err("save preview requires an unblocked story scene".into());
+        }
+        if state.scene.video.is_some() || state.scene.credits.is_some() || state.interlude.is_some()
+        {
+            return Err(
+                "save preview cannot reproduce native video, credits or interlude overlays".into(),
+            );
+        }
+        Ok(())
+    }
+}
+
+pub struct VersionedSave {
+    pub record: LoadedSave,
+    pub revision: String,
+}
+
 pub fn read_record(directory: &Path, slot: u32, fingerprint: &str) -> Result<LoadedSave, String> {
+    read_versioned_record(directory, slot, fingerprint, None).map(|save| save.record)
+}
+
+/// One bounded read and one validation path for loads, catalogs and preview
+/// requests. The digest covers those exact bytes, including whitespace and
+/// rollback, not a second read or a reconstructed envelope. Callers must also
+/// perform normal Engine validation before publishing/using the revision.
+/// No migration, restoration or filesystem writes occur here.
+pub fn read_versioned_record(
+    directory: &Path,
+    slot: u32,
+    fingerprint: &str,
+    expected_revision: Option<&str>,
+) -> Result<VersionedSave, String> {
     if !SLOTS.contains(&slot) {
         return Err("invalid save slot".into());
     }
@@ -206,10 +257,17 @@ pub fn read_record(directory: &Path, slot: u32, fingerprint: &str) -> Result<Loa
     let needs_legacy_migration = save.version == 1
         && (value["state"].get("flow").is_none()
             || (save.state.flow.event_id.is_none() && save.state.flow.variables.is_empty()));
-    Ok(LoadedSave {
-        state: save.state,
-        needs_legacy_migration,
-        rollback: save.rollback,
+    let revision = format!("{:x}", Sha256::digest(&bytes));
+    if expected_revision.is_some_and(|expected| expected != revision) {
+        return Err("save preview revision changed; refresh the save catalog".into());
+    }
+    Ok(VersionedSave {
+        record: LoadedSave {
+            state: save.state,
+            needs_legacy_migration,
+            rollback: save.rollback,
+        },
+        revision,
     })
 }
 

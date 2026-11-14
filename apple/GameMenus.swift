@@ -38,6 +38,49 @@ struct GameDocumentSheet: View {
   }
 }
 
+/// A stable native sheet, independent of the rapidly refreshed story snapshot.
+/// Do not inherit the background toolbar's modal-disabled state here.
+struct GameplayMenuSheet: View {
+  let muted: Bool
+  let hasVoice: Bool
+  let hasLibrary: Bool
+  let select: (GameplayMenuAction) -> Void
+  let close: () -> Void
+
+  var body: some View {
+    VStack(spacing: 0) {
+      GameSheetHeader(title: "游戏菜单", closeIdentifier: "close-game-menu", close: close)
+      Form {
+        Section("进度") {
+          entry(.save, "存档", "square.and.arrow.down").keyboardShortcut("s", modifiers: .command)
+          entry(.load, "读档", "tray.and.arrow.up")
+        }
+        Section("声音与显示") {
+          entry(.replayVoice, "重播语音", "speaker.wave.2").disabled(!hasVoice)
+          entry(.toggleMute, muted ? "取消静音" : "静音", muted ? "speaker.wave.2" : "speaker.slash")
+          entry(.settings, "设置", "slider.horizontal.3")
+        }
+        Section("其他") {
+          entry(.gallery, "CG 鉴赏", "photo.on.rectangle").disabled(!hasLibrary)
+          entry(.replay, "场景回想", "play.rectangle").disabled(!hasLibrary)
+          entry(.diagnostics, "兼容状态", "info.circle")
+          entry(.returnToTitle, "返回标题", "house")
+        }
+      }.formStyle(.grouped)
+    }.modifier(LibrarySurface(width: 480))
+  }
+
+  private func entry(_ action: GameplayMenuAction, _ title: String, _ symbol: String) -> some View {
+    Button {
+      select(action)
+    } label: {
+      Label(title, systemImage: symbol)
+        .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+        .contentShape(Rectangle())
+    }.accessibilityIdentifier("game-menu-\(action.rawValue)")
+  }
+}
+
 struct CollectionMenu: View {
   @ObservedObject var game: Game
   let replay: Bool
@@ -279,6 +322,8 @@ struct Backlog: View {
 
 struct SaveManager: View {
   @ObservedObject var game: Game
+  @Environment(\.scenePhase) private var phase
+  @Environment(\.dynamicTypeSize) private var typeSize
   let saving: Bool
   @Environment(\.dismiss) private var dismiss
   @State private var pending: SaveSlot?
@@ -288,6 +333,26 @@ struct SaveManager: View {
   private var canSave: Bool { !(game.snapshot?.title ?? true) && game.snapshot?.blocked == nil }
 
   var body: some View {
+    GeometryReader { proxy in page(width: proxy.size.width) }
+      .modifier(LibrarySurface(width: 720))
+      .onAppear { game.beginSavePreviews() }
+      .onDisappear { game.endSavePreviews() }
+      .onChange(of: phase) { if $0 == .active { game.reloadSaves() } }
+      .confirmationDialog(
+        saving ? "覆盖 \(pending?.name ?? "存档")？" : "读取 \(pending?.name ?? "存档")，将替换当前进度？",
+        isPresented: $confirm, titleVisibility: .visible
+      ) {
+        Button(saving ? "覆盖保存" : "读取", role: saving ? .destructive : nil) {
+          if let pending {
+            let command = "\(saving ? "save" : "load"):\(pending.slot)"
+            if game.action(command) && !saving { dismiss() }
+          }
+        }
+        Button("取消", role: .cancel) {}
+      }
+  }
+
+  private func page(width: CGFloat) -> some View {
     VStack(spacing: 0) {
       GameSheetHeader(title: saving ? "保存进度" : "读取存档", closeIdentifier: "close-saves") { dismiss() }
       if game.slots.isEmpty {
@@ -302,7 +367,7 @@ struct SaveManager: View {
             if !automatic.isEmpty {
               VStack(alignment: .leading, spacing: 10) {
                 Text("自动进度").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                ForEach(automatic) { slot in card(slot) }
+                ForEach(automatic) { slot in card(slot, width: width) }
               }
             }
             if !manual.isEmpty {
@@ -312,7 +377,7 @@ struct SaveManager: View {
                   columns: [GridItem(.adaptive(minimum: 260), spacing: 12, alignment: .top)],
                   spacing: 12
                 ) {
-                  ForEach(manual) { slot in card(slot) }
+                  ForEach(manual) { slot in card(slot, width: width) }
                 }
               }
             }
@@ -320,83 +385,145 @@ struct SaveManager: View {
         }
       }
     }
-    .modifier(LibrarySurface(width: 720))
-    .confirmationDialog(
-      saving ? "覆盖 \(pending?.name ?? "存档")？" : "读取 \(pending?.name ?? "存档")，将替换当前进度？",
-      isPresented: $confirm, titleVisibility: .visible
-    ) {
-      Button(saving ? "覆盖保存" : "读取", role: saving ? .destructive : nil) {
-        if let pending {
-          let command = "\(saving ? "save" : "load"):\(pending.slot)"
-          if game.action(command) && !saving { dismiss() }
-        }
+  }
+
+  private func card(_ slot: SaveSlot, width: CGFloat) -> some View {
+    GroupBox {
+      if slot.slot == 9 && width >= 360 && !typeSize.isAccessibilitySize {
+        HStack(alignment: .top, spacing: width >= 600 ? 16 : 12) {
+          SaveSlotThumbnail(game: game, slot: slot).frame(width: width >= 600 ? 192 : 104)
+          information(slot).frame(maxWidth: .infinity)
+        }.padding(4)
+      } else {
+        verticalCard(slot).padding(4)
       }
-      Button("取消", role: .cancel) {}
+    }.frame(maxWidth: .infinity, alignment: .topLeading)
+  }
+
+  private func verticalCard(_ slot: SaveSlot) -> some View {
+    VStack(alignment: .leading, spacing: 12) {
+      SaveSlotThumbnail(game: game, slot: slot)
+      information(slot)
     }
   }
 
-  private func card(_ slot: SaveSlot) -> some View {
-    GroupBox {
-      VStack(alignment: .leading, spacing: 10) {
-        HStack {
-          Label(
-            slot.slot == 9 ? "自动保存" : "槽位 \(slot.slot)",
-            systemImage: slot.slot == 9 ? "clock.arrow.circlepath" : "doc"
+  private func information(_ slot: SaveSlot) -> some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack {
+        Label(
+          slot.slot == 9 ? "自动保存" : "槽位 \(slot.slot)",
+          systemImage: slot.slot == 9 ? "clock.arrow.circlepath" : "doc"
+        )
+        .font(.callout.weight(.semibold))
+        Spacer(minLength: 4)
+        if slot.exists && !slot.compatible {
+          Image(systemName: "exclamationmark.triangle").foregroundStyle(GameTheme.warning)
+        }
+      }
+      VStack(alignment: .leading, spacing: 8) {
+        if slot.compatible {
+          Text(
+            slot.text.isEmpty
+              ? "已保存的游戏进度" : (slot.speaker.isEmpty ? "" : "\(slot.speaker)：") + slot.text
           )
-          .font(.callout.weight(.semibold))
-          Spacer(minLength: 4)
-          if slot.exists && !slot.compatible {
-            Image(systemName: "exclamationmark.triangle").foregroundStyle(GameTheme.warning)
+          .font(.callout).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+          if slot.savedAt > 0 {
+            Text(
+              Date(timeIntervalSince1970: Double(slot.savedAt) / 1000)
+                .formatted(date: .abbreviated, time: .shortened)
+            )
+            .font(.caption).foregroundStyle(.secondary)
+          }
+        } else {
+          Text(slot.exists ? "无法读取此存档" : "空槽位").font(.callout).foregroundStyle(.secondary)
+          if let error = slot.error {
+            Text(error).font(.caption).foregroundStyle(GameTheme.warning)
+              .fixedSize(horizontal: false, vertical: true)
           }
         }
-        VStack(alignment: .leading, spacing: 8) {
-          if slot.compatible {
-            Text(
-              slot.text.isEmpty
-                ? "已保存的游戏进度" : (slot.speaker.isEmpty ? "" : "\(slot.speaker)：") + slot.text
-            )
-            .font(.callout).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
-            if slot.savedAt > 0 {
-              Text(
-                Date(timeIntervalSince1970: Double(slot.savedAt) / 1000)
-                  .formatted(date: .abbreviated, time: .shortened)
-              )
-              .font(.caption).foregroundStyle(.secondary)
-            }
-          } else {
-            Text(slot.exists ? "无法读取此存档" : "空槽位").font(.callout).foregroundStyle(.secondary)
-            if let error = slot.error {
-              Text(error).font(.caption).foregroundStyle(GameTheme.warning)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-          }
-        }.frame(minHeight: slot.slot == 9 ? 0 : 54, alignment: .topLeading)
-        HStack {
-          if slot.compatible {
-            Text("第 \(slot.pages) 页").font(.caption).foregroundStyle(.secondary)
-          }
-          Spacer()
-          if saving && slot.slot != 9 {
-            Button("保存") {
-              if slot.exists {
-                pending = slot
-                confirm = true
-              } else {
-                game.action("save:\(slot.slot)")
-              }
-            }.disabled(!canSave).accessibilityLabel("保存至\(slot.name)").accessibilityIdentifier(
-              "save-slot-\(slot.slot)")
-          } else if !saving {
-            Button("读取") {
+      }.frame(minHeight: slot.slot == 9 ? 0 : 54, alignment: .topLeading)
+      HStack {
+        if slot.compatible {
+          Text("第 \(slot.pages) 页").font(.caption).foregroundStyle(.secondary)
+        }
+        Spacer()
+        if saving && slot.slot != 9 {
+          Button("保存") {
+            if slot.exists {
               pending = slot
               confirm = true
+            } else {
+              game.action("save:\(slot.slot)")
             }
-            .disabled(!slot.compatible).accessibilityLabel("读取\(slot.name)")
-            .accessibilityIdentifier("load-slot-\(slot.slot)")
+          }.disabled(!canSave).accessibilityLabel("保存至\(slot.name)").accessibilityIdentifier(
+            "save-slot-\(slot.slot)")
+        } else if !saving {
+          Button("读取") {
+            pending = slot
+            confirm = true
           }
-        }.buttonStyle(.bordered).controlSize(.regular)
-      }.padding(4).frame(maxWidth: .infinity, alignment: .leading)
+          .disabled(!slot.compatible).accessibilityLabel("读取\(slot.name)")
+          .accessibilityIdentifier("load-slot-\(slot.slot)")
+        }
+      }.buttonStyle(.bordered).controlSize(.regular)
+    }.frame(maxWidth: .infinity, alignment: .leading)
+  }
+}
+
+private struct SaveSlotThumbnail: View {
+  @ObservedObject var game: Game
+  let slot: SaveSlot
+  @State private var image: Image?
+  @State private var loadedIdentity: String?
+  @State private var unavailable = false
+  private var identity: String {
+    "\(game.savePreviewGeneration):\(slot.slot):\(slot.exists):\(slot.compatible):\(slot.previewRevision ?? "none")"
+  }
+
+  var body: some View {
+    ZStack {
+      GameTheme.surface
+      if slot.exists && slot.compatible, let image, loadedIdentity == identity {
+        image.resizable().scaledToFit()
+      } else if !slot.exists {
+        Image(systemName: "photo").font(.title2).foregroundStyle(.tertiary)
+      } else if !slot.compatible || slot.previewRevision == nil
+        || (unavailable && loadedIdentity == identity)
+      {
+        VStack(spacing: 6) {
+          Image(systemName: "photo").font(.title2)
+          Text("暂无预览").font(.caption)
+        }.foregroundStyle(GameTheme.secondaryText)
+      } else {
+        ProgressView().controlSize(.small)
+      }
     }
-    .frame(maxWidth: .infinity, alignment: .topLeading)
+    .aspectRatio(16 / 9, contentMode: .fit)
+    .clipShape(RoundedRectangle(cornerRadius: 8))
+    .overlay {
+      RoundedRectangle(cornerRadius: 8).strokeBorder(GameTheme.border, lineWidth: 1)
+        .allowsHitTesting(false)
+    }
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("\(slot.name)的画面预览")
+    .accessibilityValue(image != nil && loadedIdentity == identity ? "已显示" : "暂无预览")
+    .accessibilityIdentifier("save-preview-\(slot.slot)")
+    .task(id: identity) {
+      image = nil
+      loadedIdentity = nil
+      unavailable = false
+      guard slot.exists, slot.compatible, slot.previewRevision != nil else { return }
+      let requestedIdentity = identity
+      let result = await game.saveThumbnail(slot)
+      guard !Task.isCancelled, requestedIdentity == identity else { return }
+      loadedIdentity = requestedIdentity
+      image = result
+      unavailable = result == nil
+    }
+    .onDisappear {
+      image = nil
+      loadedIdentity = nil
+      unavailable = false
+    }
   }
 }

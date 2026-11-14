@@ -43,6 +43,43 @@ enum ReadingInputPolicy {
   }
 }
 
+enum GameplayMenuAction: String, CaseIterable, Sendable {
+  case save, load, replayVoice, toggleMute, settings, gallery, replay, diagnostics, returnToTitle
+}
+
+/// Keep the game paused until UIKit has actually dismissed the menu. A selected
+/// action is consumed once, after dismissal, never while another presenter owns it.
+struct GameplayMenuPresentation: Equatable {
+  private enum Phase: Equatable {
+    case closed, presented
+    case dismissing(GameplayMenuAction?)
+  }
+  private var phase: Phase = .closed
+  var isPresented: Bool { phase == .presented }
+  var blocksGameplay: Bool { phase != .closed }
+
+  @discardableResult mutating func present() -> Bool {
+    guard phase == .closed else { return false }
+    phase = .presented
+    return true
+  }
+  @discardableResult mutating func select(_ action: GameplayMenuAction) -> Bool {
+    guard phase == .presented else { return false }
+    phase = .dismissing(action)
+    return true
+  }
+  mutating func dismiss() {
+    // SwiftUI also writes false after selecting an action. Preserve that action.
+    if phase == .presented { phase = .dismissing(nil) }
+  }
+  mutating func didDismiss() -> GameplayMenuAction? {
+    let action: GameplayMenuAction?
+    if case .dismissing(let pending) = phase { action = pending } else { action = nil }
+    phase = .closed
+    return action
+  }
+}
+
 enum ReadingLayout {
   // Reserve space for the speaker/actions and let long or large text scroll.
   // Unlike the scene, reading typography does not scale with the 16:9 canvas.

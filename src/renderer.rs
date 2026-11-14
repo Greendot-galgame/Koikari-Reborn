@@ -61,6 +61,9 @@ pub struct Renderer {
     images: HashMap<String, ImageInfo>,
     peak_bytes: usize,
     clock: u64,
+    cache_limit: usize,
+    texture_limit: usize,
+    encoded_limit: Option<u64>,
 }
 
 fn texture(
@@ -99,6 +102,29 @@ impl Renderer {
     }
     /// Headless construction also lets module checks exercise real Metal without UI.
     pub fn for_device(device: Device) -> Result<Self, String> {
+        Self::with_limits(device, CACHE_LIMIT, TEXTURE_LIMIT, None)
+    }
+
+    /// Dedicated save-preview renderer. Normal constructors/budgets are unchanged.
+    /// Asset textures: 48 MiB soft / 64 MiB hard; encoded image reads: 32 MiB
+    /// before XP3 decompression. The canonical 2560x1440 canvases stay unchanged
+    /// for shader correctness: a separate fixed 29,491,200 bytes (~28.1 MiB),
+    /// plus the caller's small output texture. No window or live renderer is used.
+    pub fn for_save_preview(device: Device) -> Result<Self, String> {
+        Self::with_limits(
+            device,
+            48 * 1024 * 1024,
+            64 * 1024 * 1024,
+            Some(32 * 1024 * 1024),
+        )
+    }
+
+    fn with_limits(
+        device: Device,
+        cache_limit: usize,
+        texture_limit: usize,
+        encoded_limit: Option<u64>,
+    ) -> Result<Self, String> {
         let queue = device.new_command_queue();
         let library = device.new_library_with_source(SHADER, &CompileOptions::new())?;
         let make =
@@ -156,6 +182,9 @@ impl Renderer {
             images: HashMap::new(),
             peak_bytes: 0,
             clock: 0,
+            cache_limit,
+            texture_limit,
+            encoded_limit,
         })
     }
 
@@ -174,21 +203,32 @@ impl Renderer {
                 .min_by_key(|(_, v)| v.used)
                 .map(|(k, _)| k.clone());
             let Some(key) = key else {
-                if limit == CACHE_LIMIT {
+                if limit == self.cache_limit {
                     break;
                 }
-                return Err("scene exceeds the 256 MiB texture budget".into());
+                return Err(format!(
+                    "scene exceeds the {} MiB texture budget",
+                    self.texture_limit / (1024 * 1024)
+                ));
             };
             total -= self.cache.remove(&key).expect("cache entry exists").bytes;
         }
         Ok(())
     }
     fn reserve(&mut self, active: &HashSet<TextureKey>, incoming: usize) -> Result<(), String> {
-        self.evict(active, incoming, TEXTURE_LIMIT)?;
+        self.evict(active, incoming, self.texture_limit)?;
         self.peak_bytes = self
             .peak_bytes
             .max(self.cache.values().map(|v| v.bytes).sum::<usize>() + incoming);
         Ok(())
+    }
+
+    fn image_bytes(&self, store: &Store, name: &str) -> Result<Vec<u8>, String> {
+        match self.encoded_limit {
+            Some(limit) => store.bytes_limited(name, limit),
+            None => store.bytes(name),
+        }
+        .map_err(|e| e.to_string())
     }
 
     fn decode(bytes: &[u8], wide: bool) -> Result<image::RgbaImage, String> {
@@ -221,7 +261,7 @@ impl Renderer {
             }
         }
         self.cache.remove(&key);
-        let bytes = store.bytes(name).map_err(|e| e.to_string())?;
+        let bytes = self.image_bytes(store, name)?;
         let (width, height) = image::ImageReader::new(Cursor::new(&bytes))
             .with_guessed_format()
             .map_err(|e| e.to_string())?
@@ -342,7 +382,7 @@ impl Renderer {
         if let Some(info) = self.images.get(name) {
             return Ok(*info);
         }
-        let bytes = store.bytes(name).map_err(|e| e.to_string())?;
+        let bytes = self.image_bytes(store, name)?;
         let (width, height) = image::ImageReader::new(Cursor::new(&bytes))
             .with_guessed_format()
             .map_err(|e| e.to_string())?
@@ -488,7 +528,7 @@ impl Renderer {
             if size[0] <= x || size[1] <= y {
                 continue;
             }
-            let source = Self::decode(&store.bytes(name).map_err(|e| e.to_string())?, false)?;
+            let source = Self::decode(&self.image_bytes(store, name)?, false)?;
             image::imageops::overlay(&mut rgba, &source, -(x as i64), -(y as i64));
         }
         for pixel in rgba.pixels_mut() {
@@ -657,7 +697,7 @@ impl Renderer {
             )?;
         }
         let command = self.queue.new_command_buffer().to_owned();
-        self.evict(&active, 0, CACHE_LIMIT)?;
+        self.evict(&active, 0, self.cache_limit)?;
         self.encode_layers(
             &command,
             &self.canvases[1],
