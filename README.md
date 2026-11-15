@@ -25,7 +25,7 @@
 
 ## 界面预览
 
-用户提供的 macOS 运行截图（截取自 build 16），点击可查看大图。build 17 已更新对白框、人物介绍和鉴赏界面，实际效果以运行中的应用为准。截图中的原作画面归各自权利人所有，不属于本项目的 MIT 授权范围。
+用户提供的 macOS 运行截图（截取自 build 18），点击可查看大图。截图中的原作画面归各自权利人所有，不属于本项目的 MIT 授权范围。
 
 <p align="center">
   <a href=".github/assets/screenshots/title-screen.jpg"><img src=".github/assets/screenshots/title-screen.jpg" alt="游戏首页：继续游戏、新游戏、存档管理、CG 鉴赏与场景回想" width="100%"></a>
@@ -35,7 +35,7 @@
 <table>
   <tr>
     <td width="50%" align="center"><a href=".github/assets/screenshots/dialogue.jpg"><img src=".github/assets/screenshots/dialogue.jpg" alt="剧情对话：角色画面、对白框及阅读工具栏" width="100%"></a><br><sub>剧情对话</sub></td>
-    <td width="50%" align="center"><a href=".github/assets/screenshots/character-introduction.jpg"><img src=".github/assets/screenshots/character-introduction.jpg" alt="人物介绍：空路椿的介绍画面" width="100%"></a><br><sub>人物介绍</sub></td>
+    <td width="50%" align="center"><a href=".github/assets/screenshots/character-introduction.jpg"><img src=".github/assets/screenshots/character-introduction.jpg" alt="人物介绍：角色登场页的浅色对白卡与轻触继续提示" width="100%"></a><br><sub>人物介绍</sub></td>
   </tr>
 </table>
 
