@@ -21,6 +21,7 @@
 > **测试阶段**：本项目不附带游戏本体或运行所需的原作资源，请自行合法取得。
 
 <p align="center">
+  <a href="https://github.com/Greendot-galgame/Koikari-Reborn/releases/latest">下载</a> ·
   <a href="#界面预览">界面预览</a> ·
   <a href="#功能">功能</a> ·
   <a href="#快速开始">快速开始</a> ·
@@ -69,7 +70,7 @@
 
 ## 快速开始
 
-支持 **macOS 13+（Apple Silicon）**、**iOS / iPadOS 16+**。目前需[源码构建](#源码构建)；macOS 为临时签名、未经公证，iOS 需自行配置签名。最低配置不代表所有设备与系统版本均已实测。
+支持 **macOS 13+（Apple Silicon）**、**iOS / iPadOS 16+**。macOS 可从 [最新 Release](https://github.com/Greendot-galgame/Koikari-Reborn/releases/latest) 下载临时签名包（未经公证）；iOS / iPadOS 需[源码构建](#源码构建)并自行配置签名。最低配置不代表所有设备与系统版本均已实测。
 
 ### 1. 准备资源
 
