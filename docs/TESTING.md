@@ -103,6 +103,12 @@ cargo test --test animation gpu:: -- --ignored --test-threads=1
 - 在 macOS 上用真实合并资源的 `0_14` 介绍页复核：浅色半透明卡在彩色人物画上保持可读，紫色「人物介绍」标签/侧栏、引语与「轻触继续」正常；卡片保持内容固有高度，不再被装饰元素撑满。单图介绍的浅色胶囊只在合成夹具中检查。测试后已恢复用户存档、进度和偏好。
 - 该构建包含 build 17 的全部对白、快进、回想和 CG 大图修复；仅人物介绍视觉样式变化。
 
+## iPhone / iPad 设备包 · build 18（2026-11-15）
+
+- `CONFIGURATION=Release scripts/build-apple.sh iphoneos` 编译、链接成功；产物为 arm64 设备包，`Info.plist` 为 `0.5.0 (18)`、`MinimumOSVersion 16.0`、`UIDeviceFamily [1,2]`、仅横屏。
+- 构建使用 `CODE_SIGNING_ALLOWED=NO`；包内无 `_CodeSignature` 和 `embedded.mobileprovision`，`codesign` 报告未签名。IPA 采用 `Payload/KoikariReborn.app` 结构，作为未签名包发布，需用户使用自己的 Apple ID / Team 重签后安装。
+- **未在 iPhone / iPad 真机安装或运行**；触控、声音、旋转、最低系统和设备内存均未验证。构建成功和 plist 检查不等于可安装或真机通过。
+
 ## 可公开复现的检查
 
 不需要原作资源：
