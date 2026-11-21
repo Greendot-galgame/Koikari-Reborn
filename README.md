@@ -18,7 +18,7 @@
   <img src="https://img.shields.io/badge/platforms-macOS_·_iPhone_·_iPad-456b86" alt="macOS, iPhone, iPad">
 </p>
 
-> **测试阶段**：本项目不附带游戏本体或运行所需的原作资源，请自行合法取得。
+> **测试阶段**：[0.5.0 build 19 测试版（修复对白停页时立绘持续横抖）](https://github.com/Greendot-galgame/Koikari-Reborn/releases/tag/v0.5.0-b19)。本项目不附带游戏本体或运行所需的原作资源，请自行合法取得。
 
 <p align="center">
   <a href="https://github.com/Greendot-galgame/Koikari-Reborn/releases/latest">下载</a> ·

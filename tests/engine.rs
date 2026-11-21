@@ -370,6 +370,81 @@ fn dialogue_continue_stops_old_motions_but_raw_line_wait_preserves_them() {
 }
 
 #[test]
+fn horizontal_shakes_settle_while_reading_without_advancing_the_page() {
+    use koikari_reborn::animation;
+    for (motion, delimiter, duration) in [
+        ("@t_move lay=6 ppe", "c", 160),
+        ("@motion_start layer=6 name=ぷるぷる永", "p", 160),
+        ("@t_move lay=6 yue", "l", 680),
+        ("@motion_start layer=6 name=ゆらゆら永", "c", 680),
+    ] {
+        let directory = sprite_game(&format!(
+            "@stc ch=6 f=111 time=0\n{motion}\nReading[{delimiter}]\nNext[c]"
+        ));
+        let mut engine = Engine::open(Arc::new(Store::open(directory.path()).unwrap())).unwrap();
+        engine.start().unwrap();
+        let page = engine.state.pages;
+        let rest = engine.state.scene.layers.clone();
+        engine.tick(duration - 7).unwrap();
+        assert_ne!(animation::layers(&engine.state.scene), rest, "{motion}");
+        let saved = engine.state.clone();
+        engine.tick(7).unwrap();
+        assert_eq!(animation::layers(&engine.state.scene), rest);
+        engine.tick(11).unwrap(); // Not a cycle boundary: the track must really be gone.
+        assert_eq!(animation::layers(&engine.state.scene), rest, "{motion}");
+        engine.restore(saved).unwrap();
+        engine.tick(18).unwrap();
+        assert_eq!(animation::layers(&engine.state.scene), rest);
+        assert_eq!(engine.state.pages, page);
+        assert_eq!(engine.state.scene.text, "Reading");
+    }
+}
+
+#[test]
+fn page_shake_limit_preserves_scripted_waits_and_other_loops() {
+    use koikari_reborn::animation;
+    let directory = sprite_game(
+        "@stc ch=6 f=111 time=0\n@t_move lay=6 ppe\n@t_move lay=6 ppye\n@wait time=501\nReading[c]",
+    );
+    let mut engine = Engine::open(Arc::new(Store::open(directory.path()).unwrap())).unwrap();
+    engine.start().unwrap();
+    let rest = engine.state.scene.layers[0].clone();
+    engine.tick(493).unwrap(); // Both loops outlive the short gesture during the scripted wait.
+    let moving = animation::layers(&engine.state.scene);
+    assert_ne!(moving[0].x, rest.x);
+    assert_ne!(moving[0].y, rest.y);
+    engine.tick(8).unwrap();
+    assert_eq!(engine.state.scene.text, "Reading");
+    engine.tick(77).unwrap();
+    let reading = animation::layers(&engine.state.scene);
+    assert_eq!(reading[0].x, rest.x);
+    assert_ne!(reading[0].y, rest.y);
+}
+
+#[test]
+fn restoring_an_older_held_page_settles_the_existing_shake_without_restarting_it() {
+    use koikari_reborn::animation;
+    let directory = sprite_game("@stc ch=6 f=111 time=0\nReading[c]");
+    let mut engine = Engine::open(Arc::new(Store::open(directory.path()).unwrap())).unwrap();
+    engine.start().unwrap();
+    // Model an old save: the delimiter has run, but its track is still infinite.
+    let mut saved = engine.state.clone();
+    animation::command(
+        &mut saved.scene,
+        "t_move",
+        &[("lay".into(), "6".into()), ("ppe".into(), "true".into())].into(),
+    )
+    .unwrap();
+    animation::tick(&mut saved.scene, 5007);
+    assert_ne!(animation::layers(&saved.scene), saved.scene.layers);
+    engine.restore(saved.clone()).unwrap();
+    assert_eq!(engine.state, saved); // The FFI requires a lossless restore.
+    engine.tick(1).unwrap();
+    assert_eq!(animation::layers(&engine.state.scene), saved.scene.layers);
+    assert_eq!(engine.state.pages, saved.pages);
+}
+
+#[test]
 fn face_mode_overrides_stage_position_and_replaces_the_previous_portrait_only() {
     let directory = sprite_game(
         "@stc ch=7 pr f=111\n@stc ch=6 pc fc f=111\n[地]First[c]\n@stc ch=7 pr f=111 fcenabled=true\n[地]Second[c]"

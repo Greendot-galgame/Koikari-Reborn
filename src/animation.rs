@@ -16,7 +16,7 @@ pub enum Outcome {
     Wait(u64),
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct Point {
     value: f32,
     ms: u64,
@@ -527,6 +527,42 @@ fn preset(id: &str) -> Option<Motion> {
         loops_x: loops,
         loops_y: loops,
     })
+}
+
+/// A sustained sideways gesture can loop during scripted action, but should not
+/// depend on how long the player spends reading. Use its finite counterpart's
+/// loop count without restarting its clock or touching other motion tracks.
+pub(crate) fn settle_dialogue_shakes(scene: &mut Scene) -> Result<(), String> {
+    if scene.visual.duration_ms != u64::MAX {
+        return Ok(());
+    }
+    let mut runtime = read(scene)?;
+    if limit_reading_loops(&mut runtime.tracks) {
+        write(scene, &runtime)?;
+    }
+    Ok(())
+}
+
+fn limit_reading_loops(tracks: &mut [Track]) -> bool {
+    let mut changed = false;
+    for t in tracks {
+        if t.kind != "motion" || t.motion.loops_x != 0 || !t.motion.y.0.is_empty() {
+            continue;
+        }
+        let short = match t.id.as_str() {
+            "ppe" | "ぷるぷる永" => "pp",
+            "yue" | "ゆらゆら永" => "yu",
+            _ => continue,
+        };
+        if let Some(motion) = preset(short) {
+            // A script may use the same id for a custom path.
+            if t.motion.x.0 == motion.x.0 {
+                t.motion.loops_x = motion.loops_x;
+                changed = true;
+            }
+        }
+    }
+    changed
 }
 
 fn apply(layers: &mut [Layer], track: &Track, elapsed: u64) {
@@ -1156,9 +1192,17 @@ fn execute(
 }
 
 pub fn tick(scene: &mut Scene, milliseconds: u64) {
+    tick_scene(scene, milliseconds, false);
+}
+
+pub(crate) fn tick_scene(scene: &mut Scene, milliseconds: u64, reading: bool) {
     // Keep the clock running while idle, for continuous ASD animation.
     scene.visual.elapsed_ms = scene.visual.elapsed_ms.saturating_add(milliseconds);
     let Ok(mut r) = read(scene) else { return };
+    // Old saves can resume on a page without re-executing its delimiter.
+    if reading && scene.visual.duration_ms == u64::MAX {
+        limit_reading_loops(&mut r.tracks);
+    }
     let now = scene.visual.elapsed_ms;
     r.tracks.retain(|t| {
         if t.duration() != u64::MAX && now.saturating_sub(t.start) >= t.duration() {

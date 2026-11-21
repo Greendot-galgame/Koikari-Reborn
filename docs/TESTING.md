@@ -109,6 +109,10 @@ cargo test --test animation gpu:: -- --ignored --test-threads=1
 - 构建使用 `CODE_SIGNING_ALLOWED=NO`；包内无 `_CodeSignature` 和 `embedded.mobileprovision`，`codesign` 报告未签名。IPA 采用 `Payload/KoikariReborn.app` 结构，作为未签名包发布，需用户使用自己的 Apple ID / Team 重签后安装。
 - **未在 iPhone / iPad 真机安装或运行**；触控、声音、旋转、最低系统和设备内存均未验证。构建成功和 plist 检查不等于可安装或真机通过。
 
+## 对白停页的横向抖动 · build 19
+
+停在 `[c]`、`[p]` 或 `[l]` 阅读时，内置持续横抖 `ppe` 和横摇 `yue` 现在分别按短版 `pp`（160 ms）和 `yu`（680 ms）收尾，从动作开始计时，不再持续到玩家点击。这取代了 build 12 对当前页保留这两种无限循环的预期；脚本计时等待中的循环和其他方向的动作不变。合成回归覆盖停页、读档时保留已播放时间，以及旧存档中的无限横抖在下一次剧情时钟更新后归位。macOS 上默认 Rust 回归 160 项通过、32 项显式跳过，格式与 Clippy 检查通过。本轮未用原作资源或真机复验。
+
 ## 可公开复现的检查
 
 不需要原作资源：

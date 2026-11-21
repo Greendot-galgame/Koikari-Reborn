@@ -170,7 +170,8 @@ impl Engine {
         let scene_before = self.state.scene.clone();
         let wait_before = self.state.flow.wait_ms;
         let before = self.state.scene.visual.elapsed_ms;
-        crate::animation::tick(&mut self.state.scene, milliseconds);
+        let reading = !self.state.flow.page_open && self.state.interlude.is_none();
+        crate::animation::tick_scene(&mut self.state.scene, milliseconds, reading);
         let mut changed = before != self.state.scene.visual.elapsed_ms;
         if let Some(credits) = &mut self.state.scene.credits {
             let previous = credits.elapsed_ms;
@@ -1650,6 +1651,7 @@ impl Engine {
         let arg = |key: &str| args.get(key).map(String::as_str).unwrap_or("");
         match name.to_lowercase().as_str() {
             "c" | "p" | "l" => {
+                crate::animation::settle_dialogue_shakes(&mut self.state.scene)?;
                 self.state.flow.page_open = false;
                 return Ok(true);
             }
