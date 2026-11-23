@@ -1604,213 +1604,7 @@ struct Content: View {
   var body: some View {
     VStack(spacing: 0) {
       if !title { topBar }
-      GeometryReader { geometry in
-        let width = min(geometry.size.width, geometry.size.height * 16 / 9)
-        let height = width * 9 / 16
-        let top = (geometry.size.height - height) / 2
-        ZStack {
-          Color.black
-          MetalCanvas(game: game)
-            .frame(width: geometry.size.width, height: geometry.size.height).clipped()
-            .contentShape(Rectangle()).onTapGesture {
-              if !title && !game.importing { game.next() }
-            }
-          if title {
-            titleOverlay
-          } else if let state = game.snapshot {
-            if let credits = state.scene.credits {
-              CreditsView(credits: credits, images: game.creditImages)
-                .frame(width: width, height: height)
-                .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
-            }
-            let panelWidth = ReadingLayout.panelWidth(
-              sceneWidth: width, availableWidth: geometry.size.width,
-              dialogueScale: game.dialogueScale)
-            let panelHeight = ReadingLayout.panelHeight(
-              sceneHeight: height, availableHeight: geometry.size.height,
-              textScale: game.textScale, typeScale: readingTypeSize / 18,
-              lineSpacing: game.dialogueLineSpacing, dialogueScale: game.dialogueScale)
-            let showReadingBox =
-              state.interlude == nil && state.scene.messageVisible
-              && state.scene.video == nil && !state.finished && !game.interfaceHidden
-              && !(state.scene.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && state.scene.speaker.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            if showReadingBox {
-              GameReadingPanel(
-                speaker: state.scene.speaker, text: state.scene.text, page: state.pages,
-                textScale: game.textScale, backgroundOpacity: game.dialogueOpacity,
-                lineSpacing: game.dialogueLineSpacing, showPageNumber: game.showPageNumber,
-                onAdvance: { game.next() }
-              ) {
-                if let glyph = game.messageGlyph, let sheet = game.messageGlyphSheet {
-                  MessageGlyphView(
-                    glyph: glyph, sheet: sheet, elapsed: state.scene.visual.elapsedMs
-                  ).accessibilityHidden(true)
-                }
-                Button {
-                  game.action("back")
-                } label: {
-                  Label("上一句", systemImage: "chevron.left").labelStyle(.iconOnly)
-                }
-                .buttonStyle(.bordered).controlSize(.regular).disabled(game.timeline.isEmpty)
-                .keyboardShortcut(.leftArrow, modifiers: [])
-                .accessibilityIdentifier("back").help("上一句（左方向键）")
-                Button {
-                  game.next()
-                } label: {
-                  Label(
-                    game.fastForward ? "停止快进" : "下一句",
-                    systemImage: game.fastForward ? "stop.fill" : "chevron.right"
-                  )
-                  .labelStyle(.iconOnly)
-                }
-                .buttonStyle(.bordered).controlSize(.regular).disabled(
-                  !game.fastForward && !game.canAdvance
-                )
-                .keyboardShortcut(.space, modifiers: [])
-                .accessibilityIdentifier("advance").help("下一句（空格 / 右方向键）")
-              }
-              .frame(width: panelWidth, height: panelHeight)
-              .position(
-                x: geometry.size.width / 2,
-                y: min(
-                  geometry.size.height - panelHeight / 2 - 8,
-                  max(panelHeight / 2 + 8, top + height - panelHeight / 2 - height * 0.035))
-              )
-              .disabled(game.modalOpen || game.importing || game.error != nil)
-            }
-            if game.interfaceHidden {
-              VStack {
-                Spacer()
-                HStack {
-                  Spacer()
-                  Button {
-                    game.next()
-                  } label: {
-                    Label("显示界面", systemImage: "eye")
-                  }
-                  .buttonStyle(.bordered).controlSize(.large)
-                  .keyboardShortcut(.space, modifiers: [])
-                  .accessibilityIdentifier("reveal-interface")
-                  .accessibilityHint("只恢复界面，不推进剧情；也可点击画面恢复")
-                  .help("点击画面、空格或右方向键只恢复界面，不翻页")
-                }
-              }.padding(16)
-            }
-            if state.interlude != nil && game.choices.isEmpty && state.scene.video == nil
-              && !state.finished && !game.interfaceHidden
-            {
-              VStack(spacing: 0) {
-                Spacer(minLength: 0)
-                GameInterludePanel(
-                  text: state.scene.text, textScale: game.textScale,
-                  backgroundOpacity: game.dialogueOpacity,
-                  lineSpacing: game.dialogueLineSpacing,
-                  onContinue: { game.next() }
-                )
-                .frame(maxWidth: min(panelWidth, 660))
-                .padding(.horizontal, 20)
-                .padding(.bottom, max(24, height * 0.08))
-              }
-              .frame(width: width, height: height)
-              .position(x: geometry.size.width / 2, y: top + height / 2)
-              .allowsHitTesting(!game.modalOpen && !game.importing && game.error == nil)
-            }
-            if !game.choices.isEmpty {
-              GameTheme.text.opacity(0.18).contentShape(Rectangle()).onTapGesture {}
-              VStack(spacing: 14) {
-                Label("做出你的选择", systemImage: "sparkles")
-                  .font(.system(.headline, design: .rounded)).foregroundStyle(GameTheme.accent)
-                ScrollView {
-                  VStack(spacing: 12) {
-                    ForEach(game.choices) { choice in
-                      Button {
-                        game.choose(choice)
-                      } label: {
-                        Text(choice.text).font(.system(size: 17 * game.textScale))
-                          .multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(10)
-                      }.buttonStyle(.borderedProminent).controlSize(.large)
-                        .disabled(!choice.enabled || !game.canChoose)
-                        .accessibilityIdentifier("choice-\(choice.id)")
-                    }
-                  }
-                }
-              }.padding(24).frame(width: min(620, width * 0.88), height: min(450, height * 0.85))
-                .modifier(GamePanelStyle())
-            }
-            if let video = state.scene.video {
-              let playbackIdentity = game.videoIdentity
-              Color.black.contentShape(Rectangle()).onTapGesture {}
-              if let url = game.videoURL {
-                GameVideoView(
-                  url: url, sequence: video.sequence, looping: video.looping,
-                  skippable: video.skippable, muted: game.muted, volume: game.bgmVolume,
-                  onCompleted: {
-                    if playbackIdentity == game.videoIdentity { game.videoCompleted($0) }
-                  },
-                  onFailure: {
-                    if playbackIdentity == game.videoIdentity {
-                      game.stopFastForward()
-                      game.stopAutoPlay()
-                      game.error = "视频播放失败：\($0)"
-                    }
-                  }
-                )
-                .id(game.videoIdentity).frame(width: width, height: height)
-                .environment(\.scenePhase, game.mediaPlaybackAllowed ? phase : .inactive)
-                .allowsHitTesting(game.mediaPlaybackAllowed)
-              } else {
-                ProgressView("正在准备视频…").foregroundStyle(.white).tint(.white)
-              }
-            }
-            if state.finished {
-              GameTheme.background.opacity(0.85).contentShape(Rectangle()).onTapGesture {}
-              VStack(spacing: 18) {
-                if let ending = state.flow?.ending {
-                  Text("故事结束").font(.system(.largeTitle, design: .rounded, weight: .bold))
-                  Text(ending).font(.headline).multilineTextAlignment(.center)
-                    .accessibilityIdentifier("ending-id")
-                  if state.flow?.replay == true { Text("回想播放结束").foregroundStyle(.secondary) }
-                  Button("CG 鉴赏") { openCollection(replay: false) }
-                  Button("场景回想") { openCollection(replay: true) }
-                } else {
-                  Text("剧情已停止").font(.title)
-                  Text("运行时未返回结局标识，请查看兼容状态。").font(.callout)
-                }
-                Button("返回标题") { returnToTitle = true }
-              }.buttonStyle(.bordered).controlSize(.large).padding(30).modifier(GamePanelStyle())
-            }
-            if state.blocked != nil {
-              Text("遇到未支持指令，已停止执行。请查看兼容状态。").font(.caption).padding()
-                .foregroundStyle(.white).background(GameTheme.accent)
-                .frame(maxHeight: .infinity, alignment: .top)
-            }
-          }
-          if game.importing {
-            GameTheme.background.opacity(0.96)
-            VStack(spacing: 12) {
-              Text("正在导入资源，请保持应用打开")
-              ProgressView(value: game.importProgress)
-              Text(game.importDetail).font(.caption).foregroundStyle(.secondary)
-              Button("取消导入") { game.cancelImport() }.accessibilityIdentifier("cancel-import")
-            }.padding(24).frame(width: min(340, geometry.size.width * 0.8))
-              .modifier(GamePanelStyle())
-          }
-          if game.audioOutputError != nil {
-            Button("音频输出已暂停 · 恢复选项") { game.showAudioOutputRecovery() }
-              .padding(12).modifier(GamePanelStyle())
-              .frame(maxHeight: .infinity, alignment: .top).padding(.top, 12)
-          } else if game.mediaPolicy.requiresUserResume {
-            VStack(spacing: 8) {
-              Text(game.mediaPauseMessage).font(.callout).multilineTextAlignment(.center)
-              Button("恢复音视频") { game.resumeMediaByUser() }
-                .disabled(!game.canResumeMedia).accessibilityIdentifier("resume-media")
-            }.padding(16).modifier(GamePanelStyle())
-              .frame(maxWidth: min(420, geometry.size.width * 0.9))
-              .frame(maxHeight: .infinity, alignment: .top).padding(.top, 12)
-          }
-        }
-      }.clipped()
+      stage
     }
     .foregroundStyle(GameTheme.text).tint(GameTheme.accent)
     .background(GameTheme.background).preferredColorScheme(.light)
@@ -2124,6 +1918,216 @@ struct Content: View {
 
   /// The hidden-state branch alone was enough to push `body` past the
   /// type-check budget again, so the toolbar swap lives here.
+  private var stage: some View {
+    GeometryReader { geometry in
+      let width = min(geometry.size.width, geometry.size.height * 16 / 9)
+      let height = width * 9 / 16
+      let top = (geometry.size.height - height) / 2
+      ZStack {
+        Color.black
+        MetalCanvas(game: game)
+          .frame(width: geometry.size.width, height: geometry.size.height).clipped()
+          .contentShape(Rectangle()).onTapGesture {
+            if !title && !game.importing { game.next() }
+          }
+        if title {
+          titleOverlay
+        } else if let state = game.snapshot {
+          if let credits = state.scene.credits {
+            CreditsView(credits: credits, images: game.creditImages)
+              .frame(width: width, height: height)
+              .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+          }
+          let panelWidth = ReadingLayout.panelWidth(
+            sceneWidth: width, availableWidth: geometry.size.width,
+            dialogueScale: game.dialogueScale)
+          let panelHeight = ReadingLayout.panelHeight(
+            sceneHeight: height, availableHeight: geometry.size.height,
+            textScale: game.textScale, typeScale: readingTypeSize / 18,
+            lineSpacing: game.dialogueLineSpacing, dialogueScale: game.dialogueScale)
+          let showReadingBox =
+            state.interlude == nil && state.scene.messageVisible
+            && state.scene.video == nil && !state.finished && !game.interfaceHidden
+            && !(state.scene.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+              && state.scene.speaker.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+          if showReadingBox {
+            GameReadingPanel(
+              speaker: state.scene.speaker, text: state.scene.text, page: state.pages,
+              textScale: game.textScale, backgroundOpacity: game.dialogueOpacity,
+              lineSpacing: game.dialogueLineSpacing, showPageNumber: game.showPageNumber,
+              onAdvance: { game.next() }
+            ) {
+              if let glyph = game.messageGlyph, let sheet = game.messageGlyphSheet {
+                MessageGlyphView(
+                  glyph: glyph, sheet: sheet, elapsed: state.scene.visual.elapsedMs
+                ).accessibilityHidden(true)
+              }
+              Button {
+                game.action("back")
+              } label: {
+                Label("上一句", systemImage: "chevron.left").labelStyle(.iconOnly)
+              }
+              .buttonStyle(.bordered).controlSize(.regular).disabled(game.timeline.isEmpty)
+              .keyboardShortcut(.leftArrow, modifiers: [])
+              .accessibilityIdentifier("back").help("上一句（左方向键）")
+              Button {
+                game.next()
+              } label: {
+                Label(
+                  game.fastForward ? "停止快进" : "下一句",
+                  systemImage: game.fastForward ? "stop.fill" : "chevron.right"
+                )
+                .labelStyle(.iconOnly)
+              }
+              .buttonStyle(.bordered).controlSize(.regular).disabled(
+                !game.fastForward && !game.canAdvance
+              )
+              .keyboardShortcut(.space, modifiers: [])
+              .accessibilityIdentifier("advance").help("下一句（空格 / 右方向键）")
+            }
+            .frame(width: panelWidth, height: panelHeight)
+            .position(
+              x: geometry.size.width / 2,
+              y: min(
+                geometry.size.height - panelHeight / 2 - 8,
+                max(panelHeight / 2 + 8, top + height - panelHeight / 2 - height * 0.035))
+            )
+            .disabled(game.modalOpen || game.importing || game.error != nil)
+          }
+          if game.interfaceHidden {
+            VStack {
+              Spacer()
+              HStack {
+                Spacer()
+                Button {
+                  game.next()
+                } label: {
+                  Label("显示界面", systemImage: "eye")
+                }
+                .buttonStyle(.bordered).controlSize(.large)
+                .keyboardShortcut(.space, modifiers: [])
+                .accessibilityIdentifier("reveal-interface")
+                .accessibilityHint("只恢复界面，不推进剧情；也可点击画面恢复")
+                .help("点击画面、空格或右方向键只恢复界面，不翻页")
+              }
+            }.padding(16)
+          }
+          if state.interlude != nil && game.choices.isEmpty && state.scene.video == nil
+            && !state.finished && !game.interfaceHidden
+          {
+            VStack(spacing: 0) {
+              Spacer(minLength: 0)
+              GameInterludePanel(
+                text: state.scene.text, textScale: game.textScale,
+                backgroundOpacity: game.dialogueOpacity,
+                lineSpacing: game.dialogueLineSpacing,
+                onContinue: { game.next() }
+              )
+              .frame(maxWidth: min(panelWidth, 660))
+              .padding(.horizontal, 20)
+              .padding(.bottom, max(24, height * 0.08))
+            }
+            .frame(width: width, height: height)
+            .position(x: geometry.size.width / 2, y: top + height / 2)
+            .allowsHitTesting(!game.modalOpen && !game.importing && game.error == nil)
+          }
+          if !game.choices.isEmpty {
+            GameTheme.text.opacity(0.18).contentShape(Rectangle()).onTapGesture {}
+            VStack(spacing: 14) {
+              Label("做出你的选择", systemImage: "sparkles")
+                .font(.system(.headline, design: .rounded)).foregroundStyle(GameTheme.accent)
+              ScrollView {
+                VStack(spacing: 12) {
+                  ForEach(game.choices) { choice in
+                    Button {
+                      game.choose(choice)
+                    } label: {
+                      Text(choice.text).font(.system(size: 17 * game.textScale))
+                        .multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(10)
+                    }.buttonStyle(.borderedProminent).controlSize(.large)
+                      .disabled(!choice.enabled || !game.canChoose)
+                      .accessibilityIdentifier("choice-\(choice.id)")
+                  }
+                }
+              }
+            }.padding(24).frame(width: min(620, width * 0.88), height: min(450, height * 0.85))
+              .modifier(GamePanelStyle())
+          }
+          if let video = state.scene.video {
+            let playbackIdentity = game.videoIdentity
+            Color.black.contentShape(Rectangle()).onTapGesture {}
+            if let url = game.videoURL {
+              GameVideoView(
+                url: url, sequence: video.sequence, looping: video.looping,
+                skippable: video.skippable, muted: game.muted, volume: game.bgmVolume,
+                onCompleted: {
+                  if playbackIdentity == game.videoIdentity { game.videoCompleted($0) }
+                },
+                onFailure: {
+                  if playbackIdentity == game.videoIdentity {
+                    game.stopFastForward()
+                    game.stopAutoPlay()
+                    game.error = "视频播放失败：\($0)"
+                  }
+                }
+              )
+              .id(game.videoIdentity).frame(width: width, height: height)
+              .environment(\.scenePhase, game.mediaPlaybackAllowed ? phase : .inactive)
+              .allowsHitTesting(game.mediaPlaybackAllowed)
+            } else {
+              ProgressView("正在准备视频…").foregroundStyle(.white).tint(.white)
+            }
+          }
+          if state.finished {
+            GameTheme.background.opacity(0.85).contentShape(Rectangle()).onTapGesture {}
+            VStack(spacing: 18) {
+              if let ending = state.flow?.ending {
+                Text("故事结束").font(.system(.largeTitle, design: .rounded, weight: .bold))
+                Text(ending).font(.headline).multilineTextAlignment(.center)
+                  .accessibilityIdentifier("ending-id")
+                if state.flow?.replay == true { Text("回想播放结束").foregroundStyle(.secondary) }
+                Button("CG 鉴赏") { openCollection(replay: false) }
+                Button("场景回想") { openCollection(replay: true) }
+              } else {
+                Text("剧情已停止").font(.title)
+                Text("运行时未返回结局标识，请查看兼容状态。").font(.callout)
+              }
+              Button("返回标题") { returnToTitle = true }
+            }.buttonStyle(.bordered).controlSize(.large).padding(30).modifier(GamePanelStyle())
+          }
+          if state.blocked != nil {
+            Text("遇到未支持指令，已停止执行。请查看兼容状态。").font(.caption).padding()
+              .foregroundStyle(.white).background(GameTheme.accent)
+              .frame(maxHeight: .infinity, alignment: .top)
+          }
+        }
+        if game.importing {
+          GameTheme.background.opacity(0.96)
+          VStack(spacing: 12) {
+            Text("正在导入资源，请保持应用打开")
+            ProgressView(value: game.importProgress)
+            Text(game.importDetail).font(.caption).foregroundStyle(.secondary)
+            Button("取消导入") { game.cancelImport() }.accessibilityIdentifier("cancel-import")
+          }.padding(24).frame(width: min(340, geometry.size.width * 0.8))
+            .modifier(GamePanelStyle())
+        }
+        if game.audioOutputError != nil {
+          Button("音频输出已暂停 · 恢复选项") { game.showAudioOutputRecovery() }
+            .padding(12).modifier(GamePanelStyle())
+            .frame(maxHeight: .infinity, alignment: .top).padding(.top, 12)
+        } else if game.mediaPolicy.requiresUserResume {
+          VStack(spacing: 8) {
+            Text(game.mediaPauseMessage).font(.callout).multilineTextAlignment(.center)
+            Button("恢复音视频") { game.resumeMediaByUser() }
+              .disabled(!game.canResumeMedia).accessibilityIdentifier("resume-media")
+          }.padding(16).modifier(GamePanelStyle())
+            .frame(maxWidth: min(420, geometry.size.width * 0.9))
+            .frame(maxHeight: .infinity, alignment: .top).padding(.top, 12)
+        }
+      }
+    }.clipped()
+  }
+
   @ViewBuilder private var topBar: some View {
     if game.interfaceHidden {
       hiddenToolbar
