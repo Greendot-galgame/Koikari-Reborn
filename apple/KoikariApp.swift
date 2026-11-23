@@ -1604,11 +1604,11 @@ struct Content: View {
   var body: some View {
     VStack(spacing: 0) {
       if !title {
-        readingToolbar
-          .opacity(game.interfaceHidden ? 0 : 1)
-          .disabled(game.interfaceHidden)
-          .allowsHitTesting(!game.interfaceHidden)
-          .accessibilityHidden(game.interfaceHidden)
+        if game.interfaceHidden {
+          hiddenToolbar
+        } else {
+          readingToolbar
+        }
       }
       GeometryReader { geometry in
         let width = min(geometry.size.width, geometry.size.height * 16 / 9)
@@ -1983,6 +1983,27 @@ struct Content: View {
     ViewThatFits(in: .horizontal) {
       toolbarContent(showBrand: true)
       toolbarContent(showBrand: false)
+    }
+    .padding(.horizontal, 12).padding(.vertical, 4)
+    .background(GameTheme.background)
+    .overlay(alignment: .bottom) { GameTheme.border.frame(height: 1) }
+    .disabled(game.importing || game.modalOpen || game.error != nil)
+    .zIndex(1)
+  }
+
+  private var hiddenToolbar: some View {
+    HStack(spacing: 8) {
+      Spacer(minLength: 8)
+      Button {
+        game.next()
+      } label: {
+        Label("显示界面", systemImage: "eye").labelStyle(.iconOnly)
+      }
+      .buttonStyle(.bordered).controlSize(.large)
+      .accessibilityIdentifier("reveal-interface-toolbar")
+      .accessibilityLabel("显示界面")
+      .keyboardShortcut(.space, modifiers: [])
+      .help("恢复界面，不推进剧情；也可点击画面")
     }
     .padding(.horizontal, 12).padding(.vertical, 4)
     .background(GameTheme.background)
