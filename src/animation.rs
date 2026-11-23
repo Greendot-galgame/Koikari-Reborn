@@ -1282,7 +1282,7 @@ pub(crate) fn frame(scene: &Scene) -> Result<Frame, String> {
             t.zoom2 + (1.0 - t.zoom2) * f.progress,
         ];
         if f.progress < 1.0 {
-            f.previous = scene.visual.previous.clone();
+            f.previous.clone_from(&scene.visual.previous);
         }
     }
     Ok(f)

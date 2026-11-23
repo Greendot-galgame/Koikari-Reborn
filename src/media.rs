@@ -525,7 +525,7 @@ mod tests {
         assert_eq!(audio_limit(8000, 1).unwrap(), 8000 * 600);
         assert_eq!(audio_limit(48000, 2).unwrap(), MAX_SAMPLES);
         assert!(audio_limit(0, 1).is_err());
-        assert!(audio_limit(192001, 1).is_err());
+        assert!(audio_limit(192_001, 1).is_err());
         assert!(audio_limit(48000, 3).is_err());
         assert!(pcm_wav(&[1], 48000, 2).is_err());
         assert!(pcm_wav(&[], 48000, 1).is_err());

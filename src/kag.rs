@@ -190,7 +190,7 @@ pub fn parse(source: &str) -> Result<Vec<Token>, String> {
     if let Some((line, _)) = script {
         return Err(format!("line {line}: unterminated script block"));
     }
-    if tokens.len() > 500000 {
+    if tokens.len() > 500_000 {
         return Err("script token limit".into());
     }
     Ok(tokens)

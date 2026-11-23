@@ -472,9 +472,9 @@ impl Renderer {
                             && source.size[1] > 0
                             && source.size[0] <= width
                             && source.size[1] <= height
-                            && l.x == first.x
-                            && l.y == first.y
-                            && l.opacity == first.opacity
+                            && l.x.to_bits() == first.x.to_bits()
+                            && l.y.to_bits() == first.y.to_bits()
+                            && l.opacity.to_bits() == first.opacity.to_bits()
                             && (l.width - source.size[0] as f32 * scale[0]).abs() < 0.01
                             && (l.height - source.size[1] as f32 * scale[1]).abs() < 0.01
                     });
@@ -611,10 +611,10 @@ impl Renderer {
             if cached.animation.is_some() {
                 // An un-clipped source layer retains the sheet dimensions in
                 // older saves; only its visible viewport is drawn as a frame.
-                if width == cached.source_size[0] as f32 {
+                if width.to_bits() == (cached.source_size[0] as f32).to_bits() {
                     width = clip[2] as f32;
                 }
-                if height == cached.source_size[1] as f32 {
+                if height.to_bits() == (cached.source_size[1] as f32).to_bits() {
                     height = clip[3] as f32;
                 }
             }

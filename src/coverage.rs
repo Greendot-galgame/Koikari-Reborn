@@ -736,7 +736,7 @@ pub fn audit_sources(sources: &BTreeMap<String, String>) -> Audit {
                 }
                 None => i.checked_sub(1).map(|j| audit.events[j].script.clone()),
             };
-            audit.events[i].previous = previous.clone();
+            audit.events[i].previous.clone_from(&previous);
             if let Some(to) = previous {
                 audit.edges.push(Edge {
                     kind: "event_previous_navigation".into(),
@@ -1007,7 +1007,7 @@ fn blocker(
                         .find(|(_, t)| t.line == line && t.tag.is_some())
                     {
                         b.site.token = index;
-                        b.site.tag = t.tag.clone();
+                        b.site.tag.clone_from(&t.tag);
                     }
                 }
             }
@@ -1840,7 +1840,6 @@ pub fn verify_with_driver<D: Driver>(
             Action::Tick { .. } if next.flow.wait_ms == 0 => {
                 report.timers_completed += 1;
             }
-            Action::Tick { .. } => (),
             Action::FinishVideo { .. } => report.videos_completed += 1,
             _ => (),
         }

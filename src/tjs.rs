@@ -14,7 +14,7 @@ enum Lex {
 }
 
 fn lex(source: &str) -> Result<Vec<Lex>> {
-    if source.len() > 262144 {
+    if source.len() > 262_144 {
         return Err("expression size limit".into());
     }
     let mut chars = source.chars().peekable();
@@ -218,7 +218,7 @@ impl Parser {
                 }
                 Expr::Array(elements)
             }
-            _ => {
+            Lex::Op(_) => {
                 return Err(format!(
                     "unsupported expression syntax at token {}",
                     self.pos

@@ -84,12 +84,7 @@ fn chunks(mut bytes: &[u8]) -> Result<Vec<(&[u8], &[u8])>> {
     Ok(result)
 }
 fn read_range(file: &mut File, length: u64, offset: u64, size: u64, limit: u64) -> Result<Vec<u8>> {
-    if size > limit
-        || offset
-            .checked_add(size)
-            .filter(|end| *end <= length)
-            .is_none()
-    {
+    if size > limit || offset.checked_add(size).is_none_or(|end| end > length) {
         return Err(invalid("out-of-bounds or oversized read"));
     }
     let mut bytes = vec![0; size as usize];
@@ -250,8 +245,7 @@ impl Archive {
                     if segment
                         .offset
                         .checked_add(segment.stored)
-                        .filter(|end| *end <= length)
-                        .is_none()
+                        .is_none_or(|end| end > length)
                     {
                         return Err(invalid("segment outside archive"));
                     }
@@ -477,7 +471,7 @@ mod tests {
     }
     #[test]
     fn known_adler() {
-        assert_eq!(adler32(b"Wikipedia"), 0x11e60398);
+        assert_eq!(adler32(b"Wikipedia"), 0x11e6_0398);
     }
     #[test]
     fn wrong_signature_fails() {

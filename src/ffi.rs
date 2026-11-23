@@ -43,7 +43,10 @@ impl SavePreview {
             .lock()
             .map_err(|_| "save preview worker poisoned")?;
         metal::objc::rc::autoreleasepool(|| {
-            use metal::*;
+            use metal::{
+                Device, MTLPixelFormat, MTLRegion, MTLStorageMode, MTLTextureUsage,
+                TextureDescriptor,
+            };
             let device =
                 Device::system_default().ok_or("Metal device unavailable for save preview")?;
             let mut renderer = Renderer::for_save_preview(device.clone())?;
@@ -214,7 +217,7 @@ unsafe fn string(pointer: *const c_char) -> Result<String, String> {
         .map(str::to_owned)
         .map_err(|e| e.to_string())
 }
-fn cstring(value: String) -> *mut c_char {
+fn cstring(value: &str) -> *mut c_char {
     CString::new(value.replace('\0', "�"))
         .unwrap_or_default()
         .into_raw()
@@ -274,7 +277,7 @@ pub unsafe extern "C" fn kr_close(handle: *mut Host) {
 }
 #[no_mangle]
 pub extern "C" fn kr_error() -> *mut c_char {
-    cstring(ERROR.with(|e| e.borrow().clone()))
+    cstring(&ERROR.with(|e| e.borrow().clone()))
 }
 /// # Safety
 /// Pass null or a string returned by this bridge, exactly once.
@@ -293,7 +296,7 @@ pub unsafe extern "C" fn kr_snapshot(handle: *mut Host) -> *mut c_char {
         let mut snapshot = serde_json::to_value(&h.engine.state).map_err(|e| e.to_string())?;
         snapshot["archives"] = serde_json::json!(h.engine.assets.archive_names());
         Ok(cstring(
-            serde_json::to_string(&snapshot).map_err(|e| e.to_string())?,
+            &serde_json::to_string(&snapshot).map_err(|e| e.to_string())?,
         ))
     })
 }
@@ -471,7 +474,7 @@ pub unsafe extern "C" fn kr_timeline(handle: *mut Host) -> *mut c_char {
             "interlude": state.interlude.is_some()
         })).collect();
         Ok(cstring(
-            serde_json::to_string(&entries).map_err(|e| e.to_string())?,
+            &serde_json::to_string(&entries).map_err(|e| e.to_string())?,
         ))
     })
 }
@@ -487,7 +490,7 @@ pub unsafe extern "C" fn kr_has_save(handle: *mut Host) -> i32 {
 pub unsafe extern "C" fn kr_saves(handle: *mut Host) -> *mut c_char {
     run(|| {
         Ok(cstring(
-            serde_json::to_string(&saves(host(handle)?)).map_err(|e| e.to_string())?,
+            &serde_json::to_string(&saves(host(handle)?)).map_err(|e| e.to_string())?,
         ))
     })
 }
@@ -503,7 +506,7 @@ pub unsafe extern "C" fn kr_routes(handle: *mut Host) -> *mut c_char {
             .map(|index| host.engine.route_title(index))
             .collect();
         Ok(cstring(
-            serde_json::to_string(&titles).map_err(|e| e.to_string())?,
+            &serde_json::to_string(&titles).map_err(|e| e.to_string())?,
         ))
     })
 }
@@ -609,7 +612,7 @@ pub unsafe extern "C" fn kr_tick(handle: *mut Host, milliseconds: u64) -> i32 {
 pub unsafe extern "C" fn kr_gallery(handle: *mut Host) -> *mut c_char {
     run(|| {
         Ok(cstring(
-            serde_json::to_string(&host(handle)?.engine.gallery()?).map_err(|e| e.to_string())?,
+            &serde_json::to_string(&host(handle)?.engine.gallery()?).map_err(|e| e.to_string())?,
         ))
     })
 }
@@ -685,7 +688,7 @@ pub unsafe extern "C" fn kr_replay_image(
 pub unsafe extern "C" fn kr_replays(handle: *mut Host) -> *mut c_char {
     run(|| {
         Ok(cstring(
-            serde_json::to_string(&host(handle)?.engine.replay_list()?)
+            &serde_json::to_string(&host(handle)?.engine.replay_list()?)
                 .map_err(|e| e.to_string())?,
         ))
     })
@@ -708,9 +711,7 @@ pub unsafe extern "C" fn kr_video(handle: *mut Host) -> *mut c_char {
             .map_err(|_| "video export worker poisoned")?;
         let path =
             media::export_video(&h.engine.assets, &video.asset, &h.saves.join("VideoCache"))?;
-        Ok(cstring(
-            path.to_str().ok_or("video path is not UTF-8")?.to_owned(),
-        ))
+        Ok(cstring(path.to_str().ok_or("video path is not UTF-8")?))
     })
 }
 /// # Safety
@@ -749,7 +750,7 @@ pub unsafe extern "C" fn kr_message_glyph(handle: *mut Host) -> *mut c_char {
             [width, height],
         )?;
         timeline.validate_dimensions(sheet_width, sheet_height)?;
-        Ok(cstring(serde_json::to_string(&serde_json::json!({"asset":asset,"width":sheet_width,"height":sheet_height,"timeline":timeline})).map_err(|e|e.to_string())?))
+        Ok(cstring(&serde_json::to_string(&serde_json::json!({"asset":asset,"width":sheet_width,"height":sheet_height,"timeline":timeline})).map_err(|e|e.to_string())?))
     })
 }
 /// # Safety
@@ -788,9 +789,7 @@ pub unsafe extern "C" fn kr_video_export(request: *mut VideoExport) -> *mut c_ch
             .map_err(|_| "video export worker poisoned")?;
         media::prune_video_partials(&request.directory)?;
         let path = media::export_video(&request.assets, &request.asset, &request.directory)?;
-        Ok(cstring(
-            path.to_str().ok_or("video path is not UTF-8")?.to_owned(),
-        ))
+        Ok(cstring(path.to_str().ok_or("video path is not UTF-8")?))
     })
 }
 /// # Safety

@@ -208,7 +208,8 @@ impl Engine {
         let mut entries = BTreeMap::new();
         for asset in self.assets.names() {
             let base = asset.rsplit('/').next().unwrap_or(&asset);
-            if base.starts_with("ev") && (base.ends_with(".webp") || base.ends_with(".png")) {
+            let lower = base.to_lowercase();
+            if lower.starts_with("ev") && (lower.ends_with(".webp") || lower.ends_with(".png")) {
                 let group = base.split('_').next().unwrap_or(base);
                 if group.len() < 3 || !group[2..].chars().all(|c| c.is_ascii_digit()) {
                     continue;
@@ -223,7 +224,7 @@ impl Engine {
                             .contains(&format!("asset:{}", entry.asset))
                             && self.state.progress.cg.contains(&format!("asset:{asset}"))
                         {
-                            entry.asset = asset.clone();
+                            entry.asset.clone_from(&asset);
                         }
                     })
                     .or_insert_with(|| GalleryEntry {
@@ -437,7 +438,7 @@ impl Engine {
                     if let Some(value) = value.trim().strip_prefix('=') {
                         if let Ok(ms) = value.split(';').next().unwrap_or("").trim().parse::<u64>()
                         {
-                            if ms > 86400000 {
+                            if ms > 86_400_000 {
                                 return Err("invalid transition configuration".into());
                             }
                             transition_speeds.insert(key.into(), ms);
@@ -559,7 +560,7 @@ impl Engine {
             || state.flow.call_conditions.len() > 64
             || state.flow.selected.len() > 256
             || state.flow.choices.len() > 32
-            || state.flow.wait_ms > 86400000
+            || state.flow.wait_ms > 86_400_000
             || state.flow.visited.len() > 2048
             || state.flow.staging.len() > 128
             || state.progress.events.len() > 8192
@@ -687,7 +688,7 @@ impl Engine {
             if credits.text.len() > 1024 * 1024
                 || credits.images.len() > 32
                 || credits.commands.len() > 16384
-                || credits.duration_ms > 86400000
+                || credits.duration_ms > 86_400_000
                 || credits.elapsed_ms > credits.duration_ms
                 || credits.left > WIDTH as u32
                 || credits.width > WIDTH as u32
@@ -777,7 +778,7 @@ impl Engine {
             if audio
                 .volume
                 .is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v))
-                || audio.fade_ms > 86400000
+                || audio.fade_ms > 86_400_000
             {
                 return Err("invalid saved audio settings".into());
             }
@@ -853,7 +854,7 @@ impl Engine {
         replay.state.progress.clone_from(&state.progress);
         merge_progress(&mut replay.state.progress, &self.state.progress);
         replay.start()?;
-        for _ in 0..100000 {
+        for _ in 0..100_000 {
             if replay.state.cursor == state.cursor
                 && replay.state.stack == state.stack
                 && replay.state.interlude.is_some() == state.interlude.is_some()
@@ -1439,7 +1440,7 @@ impl Engine {
             parts: 0,
         };
         if let Some(value) = args.get("f") {
-            sprite.expression = value.clone();
+            sprite.expression.clone_from(value);
         }
         if let Some(value) = args.get("p") {
             sprite.parts = value.parse().map_err(|_| "bad sprite parts")?;
@@ -1462,7 +1463,7 @@ impl Engine {
             ]
             .contains(&key.as_str())
             {
-                sprite.position = key.clone();
+                sprite.position.clone_from(key);
             }
         }
         if let Some(value) = args.get("dr") {
@@ -2194,7 +2195,7 @@ impl Engine {
                     .credits
                     .as_mut()
                     .ok_or("credits not initialized")?;
-                credits.duration_ms = duration(args, "time", 115000)?;
+                credits.duration_ms = duration(args, "time", 115_000)?;
                 credits.elapsed_ms = 0;
                 credits.start_disp = duration(args, "startdisp", 0)?
                     .try_into()
@@ -2249,7 +2250,7 @@ impl Engine {
                     .variables
                     .get("tf.ED_AllTime")
                     .and_then(Value::as_u64)
-                    .unwrap_or(115000);
+                    .unwrap_or(115_000);
                 self.state.flow.wait_ms = duration(args, "time", 3000)?
                     .checked_add((total / 8).saturating_sub(3000))
                     .ok_or("ending duration overflow")?;
@@ -2310,7 +2311,7 @@ impl Engine {
             )),
             crate::animation::Outcome::Continue => Ok(false),
             crate::animation::Outcome::Wait(ms) => {
-                if ms > 86400000 {
+                if ms > 86_400_000 {
                     return Err("animation wait exceeds limit".into());
                 }
                 self.state.flow.wait_ms = ms;
@@ -2578,7 +2579,7 @@ fn duration(args: &BTreeMap<String, String>, key: &str, default: u64) -> Result<
         })
         .unwrap_or(Ok(default))
         .and_then(|n| {
-            if n <= 86400000 {
+            if n <= 86_400_000 {
                 Ok(n)
             } else {
                 Err("duration limit".into())
