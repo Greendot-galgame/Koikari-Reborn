@@ -33,6 +33,12 @@ struct Settings: View {
             display:
               "\(game.fastForwardSpeed.formatted(.number.precision(.fractionLength(0...1))))×",
             identifier: "fast-forward-speed")
+          slider(
+            "自动播放间隔", value: $game.autoPlayDelay,
+            range: AutoPlayPolicy.range, step: 0.5,
+            display:
+              "\(game.autoPlayDelay.formatted(.number.precision(.fractionLength(0...1)))) 秒",
+            identifier: "auto-play-delay")
         }
 
         Section {
@@ -62,6 +68,7 @@ struct Settings: View {
             VStack(alignment: .leading, spacing: 8) {
               Text("长对白可上下滚动。点击画面、对话框或下一句继续；快进中再次点击只会停止。")
               Text("隐藏界面后，点击画面或按空格只会恢复界面，不会翻页。选项、视频、结局和弹窗会停止快进。")
+              Text("自动播放会在对白显示完整、语音播完后等待设定间隔再翻页；点击画面即可停止。")
               Text("对话框大小与字号只影响对白框，不随人物立绘或对白长度变化。")
               #if os(macOS)
                 Text("空格 / → 下一句　← 上一句　F 快进\n⌘S 存档　Esc 停止快进或显示界面")
@@ -80,6 +87,7 @@ struct Settings: View {
             game.dialogueLineSpacing = 5
             game.showPageNumber = false
             game.fastForwardSpeed = 1
+            game.autoPlayDelay = AutoPlayPolicy.defaultDelay
             game.bgmVolume = 0.35
             game.voiceVolume = 1
             game.seVolume = 0.7

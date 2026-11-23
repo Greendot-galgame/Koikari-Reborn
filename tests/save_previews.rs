@@ -414,7 +414,9 @@ fn invalid_arguments_fail_closed_and_png_failure_does_not_consume_lease() {
     let revision = host.revision(1).unwrap();
     let c_revision = CString::new(revision.clone()).unwrap();
     let before = host.observe();
-    for slot in [0, 7, 8, 10, u32::MAX, 2] {
+    // 0/25/26/MAX are outside SLOTS; slot 2 is a valid but empty slot whose
+    // preview request must also fail closed.
+    for slot in [0, 25, 26, u32::MAX, 2] {
         assert!(host.request(slot, &revision).is_err());
     }
     for revision in [

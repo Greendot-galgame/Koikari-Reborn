@@ -180,9 +180,15 @@ impl Host {
 }
 fn saves(h: &mut Host) -> Vec<save::SaveInfo> {
     let fingerprint = h.engine.assets.fingerprint.clone();
-    save::catalog(&h.saves, &fingerprint, |state| {
+    let mut catalog = save::catalog(&h.saves, &fingerprint, |state| {
         h.engine.validate_state(state)
-    })
+    });
+    for info in &mut catalog {
+        if let Some(route) = info.route {
+            info.route_name = h.engine.route_title(route);
+        }
+    }
+    catalog
 }
 thread_local! { static ERROR:RefCell<String>=const{RefCell::new(String::new())}; }
 fn run<T: Default>(f: impl FnOnce() -> Result<T, String>) -> T {
@@ -479,6 +485,22 @@ pub unsafe extern "C" fn kr_saves(handle: *mut Host) -> *mut c_char {
     run(|| {
         Ok(cstring(
             serde_json::to_string(&saves(host(handle)?)).map_err(|e| e.to_string())?,
+        ))
+    })
+}
+/// Route titles by index for the save-page tab bar. Index 0 is the common
+/// route; it is omitted because the common page is labeled 共通线 directly.
+/// # Safety
+/// Handle must be live and exclusively accessible on the main thread.
+#[no_mangle]
+pub unsafe extern "C" fn kr_routes(handle: *mut Host) -> *mut c_char {
+    run(|| {
+        let host = host(handle)?;
+        let titles: Vec<Option<String>> = (0..host.engine.routes_len())
+            .map(|index| host.engine.route_title(index))
+            .collect();
+        Ok(cstring(
+            serde_json::to_string(&titles).map_err(|e| e.to_string())?,
         ))
     })
 }

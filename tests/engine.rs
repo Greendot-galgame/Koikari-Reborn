@@ -244,7 +244,7 @@ fn bridge_lists_slots_and_continues_the_latest_valid_save_without_losing_current
         let slots: Vec<serde_json::Value> =
             serde_json::from_slice(CStr::from_ptr(json).to_bytes()).unwrap();
         kr_string_free(json);
-        assert_eq!(slots.len(), 7);
+        assert_eq!(slots.len(), 24);
         assert!(slots
             .iter()
             .any(|s| s["slot"] == 9 && s["compatible"] == false));

@@ -29,11 +29,15 @@ struct StoryFlow: Decodable {
   var waitSkippable: Bool?
   var ending: String?
   var replay: Bool?
+  /// Index of the route the story is currently inside, or nil on the common
+  /// route. Used to decide which save page a new manual save lands on.
+  var route: Int?
   var acceptsAdvanceWait: Bool { (waitMs ?? 0) == 0 || waitSkippable == true }
   enum CodingKeys: String, CodingKey {
     case choices, ending, replay
     case waitMs = "wait_ms"
     case waitSkippable = "wait_skippable"
+    case route
   }
 }
 struct StoryProgress: Decodable {
@@ -109,13 +113,20 @@ struct SaveSlot: Decodable, Identifiable {
   var pages: UInt64
   var speaker: String
   var text: String
+  var route: Int? = nil
+  var routeName: String? = nil
   var error: String?
   var previewRevision: String? = nil
   var id: Int { slot }
   var name: String { slot == 9 ? "自动进度" : "手动槽位 \(slot)" }
+  /// Page this save belongs to: the recorded route index, or 0 (共通线) when
+  /// absent or unknown.
+  var page: Int { route ?? 0 }
   enum CodingKeys: String, CodingKey {
     case slot, exists, compatible, pages, speaker, text, error
+    case route
     case savedAt = "saved_at"
+    case routeName = "route_name"
     case previewRevision = "preview_revision"
   }
 }
@@ -197,11 +208,14 @@ struct AudioFailurePolicy {
   }
   @Published var hasSave = false
   @Published var slots: [SaveSlot] = []
+  /// Route titles by index for the save-page tab bar (0 = common route).
+  @Published var routeNames: [String?] = []
   @Published private(set) var savePreviewGeneration = UUID()
   private let saveThumbnails = GameGalleryThumbnails()
   private var savePreviewsVisible = false
   @Published var timeline: [PastPage] = []
   @Published var fastForward = false
+  @Published var autoPlay = false
   @Published private(set) var interfaceHidden = false
   @Published var modalOpen = false {
     didSet {
@@ -281,6 +295,7 @@ struct AudioFailurePolicy {
   var canOfferHide: Bool { readingEligibility.canOfferHide }
   func hideInterface() {
     stopFastForward()
+    stopAutoPlay()
     guard canHideInterface else { return }
     interfaceHidden = true
     lastFrame = nil
@@ -294,9 +309,11 @@ struct AudioFailurePolicy {
   }
   func stopReadingMode() {
     stopFastForward()
+    stopAutoPlay()
     revealInterface()
   }
   private var fastTask: Task<Void, Never>?
+  private var autoTask: Task<Void, Never>?
   @Published var notice: String?
   @Published var saveWarning: String?
   @Published var importProgress = 0.0
@@ -332,6 +349,11 @@ struct AudioFailurePolicy {
     "fastForwardSpeed", fallback: 1, range: 1...5
   ) {
     didSet { UserDefaults.standard.set(fastForwardSpeed, forKey: "fastForwardSpeed") }
+  }
+  @Published var autoPlayDelay = Game.preference(
+    "autoPlayDelay", fallback: AutoPlayPolicy.defaultDelay, range: AutoPlayPolicy.range
+  ) {
+    didSet { UserDefaults.standard.set(autoPlayDelay, forKey: "autoPlayDelay") }
   }
   @Published var dialogueOpacity = Game.preference(
     "dialogueOpacity", fallback: 0.9, range: 0.65...1)
@@ -393,7 +415,9 @@ struct AudioFailurePolicy {
       mediaPolicy.setApplicationActive(NSApplication.shared.isActive)
       escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
         let handled = MainActor.assumeIsolated {
-          guard event.keyCode == 53, let self, self.fastForward || self.interfaceHidden else {
+          guard event.keyCode == 53, let self,
+            self.fastForward || self.autoPlay || self.interfaceHidden
+          else {
             return false
           }
           self.stopReadingMode()
@@ -464,6 +488,7 @@ struct AudioFailurePolicy {
       return false
     }
     stopFastForward()
+    stopAutoPlay()
     clearGalleryThumbnails()
     clearSaveThumbnails()
     slots.removeAll()
@@ -608,6 +633,22 @@ struct AudioFailurePolicy {
       slots = try JSONDecoder().decode([SaveSlot].self, from: Data(String(cString: json).utf8))
       hasSave = slots.contains { $0.compatible }
     } catch { self.error = "存档列表读取失败：\(error.localizedDescription)" }
+    // Route titles come from a separate, cheap FFI so the save catalog stays
+    // engine-agnostic; a failure here must never hide a valid save list.
+    if let routeJson = kr_routes(handle) {
+      defer { kr_string_free(routeJson) }
+      routeNames =
+        (try? JSONDecoder().decode([String?].self, from: Data(String(cString: routeJson).utf8)))
+        ?? []
+    } else {
+      routeNames = []
+    }
+  }
+  /// Display title for a save page index: 0 is the common route, N>0 a heroine
+  /// route. Falls back to a positional label when the route metadata is absent.
+  func routeTitle(_ index: Int) -> String {
+    guard index > 0 else { return "共通线" }
+    return routeNames.indices.contains(index) ? (routeNames[index] ?? "路线 \(index)") : "路线 \(index)"
   }
   // Prepare an immutable lease from the exact saved file, not from the live scene.
   // GPU work and PNG decoding stay on the cancellable serial thumbnail worker.
@@ -657,7 +698,10 @@ struct AudioFailurePolicy {
   }
   @discardableResult func action(_ action: String) -> Bool {
     guard let handle, !importing else { return false }
-    if action != "advance" { stopFastForward() }
+    if action != "advance" {
+      stopFastForward()
+      stopAutoPlay()
+    }
     if action == "advance", !canAdvance { return false }
     if action.hasPrefix("choose:"), !canChoose { return false }
     if action == "title" || action == "new" || action == "continue" || action == "load"
@@ -671,6 +715,7 @@ struct AudioFailurePolicy {
     if !ok {
       error = rustError()
       stopFastForward()
+      stopAutoPlay()
     }
     let loading = action == "continue" || action == "load" || action.hasPrefix("load:")
     let rewinding = action == "back" || action.hasPrefix("rewind:")
@@ -679,7 +724,9 @@ struct AudioFailurePolicy {
       forceAudio: loading || rewinding || action == "new" || action == "title"
         || action.hasPrefix("replay:"))
     lastFrame = nil
-    if ok && !fastForward
+    // Auto-play and fast-forward must not autosave on every page; that would
+    // churn the autosave slot and thrash the save thumbnails each tick.
+    if ok && !fastForward && !autoPlay
       && (loading || rewinding || action == "new" || action == "advance"
         || action.hasPrefix("choose:") || action.hasPrefix("video-complete:")
         || action.hasPrefix("replay:"))
@@ -693,12 +740,13 @@ struct AudioFailurePolicy {
   }
   func next() {
     switch ReadingInputPolicy.nextIntent(
-      interfaceHidden: interfaceHidden, fastForward: fastForward,
+      interfaceHidden: interfaceHidden, fastForward: fastForward, autoPlay: autoPlay,
       blocked: modalOpen || importing || error != nil || !active, canAdvance: canAdvance)
     {
     case .none: return
     case .reveal: stopReadingMode()
     case .stopFastForward: stopFastForward()
+    case .stopAutoPlay: stopAutoPlay()
     case .advance: action("advance")
     }
   }
@@ -707,6 +755,7 @@ struct AudioFailurePolicy {
       stopFastForward()
       return
     }
+    stopAutoPlay()
     guard canAdvance else { return }
     fastForward = true
     stopAudio()
@@ -733,6 +782,60 @@ struct AudioFailurePolicy {
     fastForward = false
     fastTask?.cancel()
     fastTask = nil
+    autoSave()
+    refresh(forceAudio: true)
+  }
+  /// Whether a voice clip is currently in flight for the page that is on
+  /// screen. Auto-play dwells until spoken dialogue finishes before turning.
+  private var voicePlaying: Bool { players["voice"]?.isPlaying == true }
+  func toggleAutoPlay() {
+    if autoPlay {
+      stopAutoPlay()
+      return
+    }
+    stopFastForward()
+    guard canAdvance else { return }
+    autoPlay = true
+    autoTask = Task { [weak self] in
+      // Track the page the dwell was measured against so a manual advance or a
+      // scene change resets the delay instead of advancing on stale text.
+      var settledPage: UInt64?
+      var dwellBegan = ContinuousClock.now
+      while !Task.isCancelled {
+        guard let self, !Task.isCancelled, self.autoPlay else { return }
+        let page = self.snapshot?.pages ?? 0
+        if self.canAdvance, !self.voicePlaying {
+          if settledPage != page {
+            settledPage = page
+            dwellBegan = .now
+          }
+          let dwell = AutoPlayPolicy.delayNanoseconds(delay: self.autoPlayDelay)
+          if dwellBegan.duration(to: .now) >= .nanoseconds(dwell) {
+            let ok = self.action("advance")
+            settledPage = nil
+            if !ok || self.error != nil || self.snapshot?.finished == true
+              || self.snapshot?.blocked != nil || self.snapshot?.interlude != nil
+              || !self.choices.isEmpty || self.snapshot?.scene.video != nil
+              || self.snapshot?.flow?.acceptsAdvanceWait == false
+            {
+              self.stopAutoPlay()
+              return
+            }
+          }
+        } else {
+          // Page not settled yet (waiting, revealing or voice playing): reset
+          // the measured dwell and keep polling without advancing.
+          settledPage = nil
+        }
+        try? await Task.sleep(nanoseconds: AutoPlayPolicy.pollInterval)
+      }
+    }
+  }
+  func stopAutoPlay() {
+    guard autoPlay else { return }
+    autoPlay = false
+    autoTask?.cancel()
+    autoTask = nil
     autoSave()
     refresh(forceAudio: true)
   }
@@ -871,6 +974,7 @@ struct AudioFailurePolicy {
   }
   @discardableResult func reloadCollection(replay: Bool) -> Bool {
     stopFastForward()
+    stopAutoPlay()
     guard let handle else { return false }
     guard let json = replay ? kr_replays(handle) : kr_gallery(handle) else {
       error = rustError()
@@ -1173,6 +1277,7 @@ struct AudioFailurePolicy {
     failedAudioClip = (clip, channel)
     error = message
     stopFastForward()
+    stopAutoPlay()
   }
   private func failAudioOutput(_ message: String) {
     guard audioOutputError == nil else { return }
@@ -1180,6 +1285,7 @@ struct AudioFailurePolicy {
     stopAudio()
     error = message
     stopFastForward()
+    stopAutoPlay()
   }
   private func clearAudioOutputFailure() {
     guard let message = audioOutputError else { return }
@@ -1206,6 +1312,7 @@ struct AudioFailurePolicy {
   }
   func replayVoice() {
     stopFastForward()
+    stopAutoPlay()
     guard let clip = snapshot?.scene.voice, !clip.asset.isEmpty else { return }
     audioFailures.retry(clip.asset)
     updateAudio(clip, channel: "voice", force: true)
@@ -1227,6 +1334,7 @@ struct AudioFailurePolicy {
     reconcileMediaPlayback()
     if !foreground {
       stopFastForward()
+      stopAutoPlay()
       autoSave()
     }
     #if os(iOS)
@@ -1238,6 +1346,7 @@ struct AudioFailurePolicy {
     reconcileMediaPlayback()
     if !applicationActive {
       stopFastForward()
+      stopAutoPlay()
       autoSave()
     }
   }
@@ -1245,17 +1354,22 @@ struct AudioFailurePolicy {
     mediaPolicy.beginInterruption()
     reconcileMediaPlayback()
     stopFastForward()
+    stopAutoPlay()
     autoSave()
   }
   func interruptionEnded(shouldResume: Bool) {
     mediaPolicy.endInterruption(shouldResume: shouldResume)
     reconcileMediaPlayback()
-    if !mediaPlaybackAllowed { stopFastForward() }
+    if !mediaPlaybackAllowed {
+      stopFastForward()
+      stopAutoPlay()
+    }
   }
   func outputRouteLost() {
     mediaPolicy.loseOutputRoute()
     reconcileMediaPlayback()
     stopFastForward()
+    stopAutoPlay()
     autoSave()
   }
   func resumeMediaByUser() {
@@ -1338,6 +1452,7 @@ struct AudioFailurePolicy {
         DispatchQueue.main.async {
           self.error = "剧情时钟失败：\(message)"
           self.stopFastForward()
+          self.stopAutoPlay()
         }
       } else if result == 2, !refreshPending {
         refreshPending = true
@@ -1350,6 +1465,7 @@ struct AudioFailurePolicy {
               || self.error != nil)
           {
             self.stopFastForward()
+            self.stopAutoPlay()
           }
         }
       }
@@ -1365,6 +1481,7 @@ struct AudioFailurePolicy {
       DispatchQueue.main.async {
         self.error = "Metal 绘制失败：\(message)"
         self.stopFastForward()
+        self.stopAutoPlay()
       }
     }
   }
@@ -1589,6 +1706,7 @@ struct Content: View {
                   onFailure: {
                     if playbackIdentity == game.videoIdentity {
                       game.stopFastForward()
+                      game.stopAutoPlay()
                       game.error = "视频播放失败：\($0)"
                     }
                   }
@@ -1800,6 +1918,7 @@ struct Content: View {
       .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification))
       { _ in
         game.stopFastForward()
+        game.stopAutoPlay()
         game.autoSave()
         game.action("flush")
         game.stopAudio()
@@ -1844,6 +1963,19 @@ struct Content: View {
       .buttonStyle(.bordered).controlSize(.large)
       .disabled(!game.fastForward && !game.canAdvance)
       .keyboardShortcut("f", modifiers: []).accessibilityIdentifier("fast-forward")
+      Button {
+        game.toggleAutoPlay()
+      } label: {
+        Label(
+          game.autoPlay ? "自动播放中 · 停止" : "自动播放",
+          systemImage: game.autoPlay ? "stop.circle" : "play.circle"
+        )
+        .labelStyle(GameToolbarLabelStyle(compact: !showBrand))
+      }
+      .accessibilityLabel(game.autoPlay ? "自动播放中，停止自动播放" : "自动播放")
+      .buttonStyle(.bordered).controlSize(.large)
+      .disabled(!game.autoPlay && !game.canAdvance)
+      .accessibilityIdentifier("auto-play")
       Button {
         game.hideInterface()
       } label: {
@@ -1928,7 +2060,12 @@ struct Content: View {
   private func synchronizeModalState() {
     let blocked = hasPresentedModal
     if game.modalOpen != blocked { game.modalOpen = blocked }
-    if blocked { game.stopFastForward() } else { game.resumePendingVideo() }
+    if blocked {
+      game.stopFastForward()
+      game.stopAutoPlay()
+    } else {
+      game.resumePendingVideo()
+    }
   }
 
   private func openGameplayMenu() {
@@ -1963,6 +2100,7 @@ struct Content: View {
     synchronizeModalState()
     // These non-modal actions must run after the modal playback gate is released.
     switch action {
+    case .autoPlay: game.toggleAutoPlay()
     case .replayVoice: game.replayVoice()
     case .toggleMute: game.toggleMute()
     default: break
@@ -1971,6 +2109,7 @@ struct Content: View {
 
   private func openSaves(saving: Bool) {
     game.stopFastForward()
+    game.stopAutoPlay()
     guard !game.importing, game.error == nil else { return }
     game.reloadSaves()
     guard game.error == nil else { return }
@@ -2005,7 +2144,7 @@ struct Content: View {
             game.modalOpen || game.importing || game.error != nil
               || (!game.interfaceHidden && !game.fastForward && !game.canAdvance))
           Button("停止快进或显示界面") { game.stopReadingMode() }.keyboardShortcut(.escape, modifiers: [])
-          .disabled(!game.interfaceHidden && !game.fastForward)
+          .disabled(!game.interfaceHidden && !game.fastForward && !game.autoPlay)
         }
       }
     #endif

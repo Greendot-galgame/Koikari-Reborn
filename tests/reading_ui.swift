@@ -45,24 +45,33 @@ import Foundation
 
     for hidden in [false, true] {
       for fast in [false, true] {
-        for blocked in [false, true] {
-          for advances in [false, true] {
-            let intent = ReadingInputPolicy.nextIntent(
-              interfaceHidden: hidden, fastForward: fast, blocked: blocked, canAdvance: advances)
-            let expected: ReadingInputPolicy.Intent =
-              blocked
-              ? .none : hidden ? .reveal : fast ? .stopFastForward : advances ? .advance : .none
-            check(intent == expected, "Inputs must consume reveal/stop before any advance")
+        for auto in [false, true] {
+          for blocked in [false, true] {
+            for advances in [false, true] {
+              let intent = ReadingInputPolicy.nextIntent(
+                interfaceHidden: hidden, fastForward: fast, autoPlay: auto, blocked: blocked,
+                canAdvance: advances)
+              let expected: ReadingInputPolicy.Intent =
+                blocked
+                ? .none
+                : hidden
+                  ? .reveal
+                  : fast ? .stopFastForward : auto ? .stopAutoPlay : advances ? .advance : .none
+              check(intent == expected, "Inputs must consume reveal/stop before any advance")
+            }
           }
         }
       }
     }
     let first = ReadingInputPolicy.nextIntent(
-      interfaceHidden: true, fastForward: false, blocked: false, canAdvance: false)
+      interfaceHidden: true, fastForward: false, autoPlay: false, blocked: false, canAdvance: false)
     check(first == .reveal, "Hidden pages reveal even though advancement is gated")
     let second = ReadingInputPolicy.nextIntent(
-      interfaceHidden: false, fastForward: false, blocked: false, canAdvance: true)
+      interfaceHidden: false, fastForward: false, autoPlay: false, blocked: false, canAdvance: true)
     check(second == .advance, "Only a separate eligible input advances after reveal")
+    let autoPlaying = ReadingInputPolicy.nextIntent(
+      interfaceHidden: false, fastForward: false, autoPlay: true, blocked: false, canAdvance: true)
+    check(autoPlaying == .stopAutoPlay, "A tap stops auto-play instead of skipping a page")
 
     for playback in [false, true] {
       for hidden in [false, true] {
@@ -91,6 +100,26 @@ import Foundation
     check(
       FastForwardPolicy.intervalNanoseconds(speed: .infinity) == FastForwardPolicy.baseInterval,
       "Non-finite speed falls back to the original cadence")
+
+    for delay in [0.5, 1, 2, 5, 10] {
+      check(
+        AutoPlayPolicy.delayNanoseconds(delay: delay)
+          == UInt64((delay * 1_000_000_000).rounded()),
+        "Auto-play dwell time tracks the configured delay")
+    }
+    check(
+      AutoPlayPolicy.delayNanoseconds(delay: 0)
+        == UInt64(AutoPlayPolicy.range.lowerBound * 1_000_000_000),
+      "Auto-play delay clamps to its lower bound")
+    check(
+      AutoPlayPolicy.delayNanoseconds(delay: 99)
+        == UInt64(AutoPlayPolicy.range.upperBound * 1_000_000_000),
+      "Auto-play delay clamps to its upper bound")
+    check(
+      AutoPlayPolicy.delayNanoseconds(delay: .nan)
+        == UInt64(AutoPlayPolicy.defaultDelay * 1_000_000_000),
+      "Non-finite auto-play delay falls back to the default")
+    check(AutoPlayPolicy.range.contains(AutoPlayPolicy.defaultDelay), "Default delay is in range")
 
     for height in [0.0, 120, 247, 302, 720] {
       for textScale in [0.8, 1, 1.6] {

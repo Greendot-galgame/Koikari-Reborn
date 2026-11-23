@@ -33,15 +33,17 @@ struct ReadingEligibility {
 
 enum ReadingInputPolicy {
   enum Intent: Equatable {
-    case none, reveal, stopFastForward, advance
+    case none, reveal, stopFastForward, stopAutoPlay, advance
   }
 
   static func nextIntent(
-    interfaceHidden: Bool, fastForward: Bool, blocked: Bool, canAdvance: Bool
+    interfaceHidden: Bool, fastForward: Bool, autoPlay: Bool, blocked: Bool,
+    canAdvance: Bool
   ) -> Intent {
     guard !blocked else { return .none }
     if interfaceHidden { return .reveal }
     if fastForward { return .stopFastForward }
+    if autoPlay { return .stopAutoPlay }
     return canAdvance ? .advance : .none
   }
 
@@ -51,7 +53,8 @@ enum ReadingInputPolicy {
 }
 
 enum GameplayMenuAction: String, CaseIterable, Sendable {
-  case save, load, replayVoice, toggleMute, settings, gallery, replay, diagnostics, returnToTitle
+  case save, load, autoPlay, replayVoice, toggleMute, settings, gallery, replay, diagnostics,
+    returnToTitle
 }
 
 /// Keep the game paused until UIKit has actually dismissed the menu. A selected
@@ -97,6 +100,25 @@ enum FastForwardPolicy {
     guard speed.isFinite else { return baseInterval }
     let clamped = min(range.upperBound, max(range.lowerBound, speed))
     return UInt64((Double(baseInterval) / clamped).rounded())
+  }
+}
+
+/// Auto-advance pacing. The configured delay is applied after the current page
+/// is fully revealed (and its voice finished). It is a pure dwell time, unlike
+/// fast-forward which speeds through pages.
+enum AutoPlayPolicy {
+  /// Delay bounds in seconds between "page fully revealed" and "advance".
+  static let range: ClosedRange<Double> = 0.5...10
+  static let defaultDelay: Double = 2
+  /// Re-check cadence while waiting for a page to finish revealing or voice to
+  /// finish playing. Short enough to feel live, long enough to stay idle-cheap.
+  static let pollInterval: UInt64 = 120_000_000
+
+  /// Dwell time in nanoseconds for a configured delay in seconds.
+  static func delayNanoseconds(delay: Double) -> UInt64 {
+    guard delay.isFinite else { return UInt64(defaultDelay * 1_000_000_000) }
+    let clamped = min(range.upperBound, max(range.lowerBound, delay))
+    return UInt64((clamped * 1_000_000_000).rounded())
   }
 }
 

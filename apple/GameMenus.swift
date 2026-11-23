@@ -56,6 +56,7 @@ struct GameplayMenuSheet: View {
           entry(.load, "读档", "tray.and.arrow.up")
         }
         Section("声音与显示") {
+          entry(.autoPlay, "自动播放", "play.circle")
           entry(.replayVoice, "重播语音", "speaker.wave.2").disabled(!hasVoice)
           entry(.toggleMute, muted ? "取消静音" : "静音", muted ? "speaker.wave.2" : "speaker.slash")
           entry(.settings, "设置", "slider.horizontal.3")
@@ -498,14 +499,33 @@ struct SaveManager: View {
   @Environment(\.dismiss) private var dismiss
   @State private var pending: SaveSlot?
   @State private var confirm = false
+  /// Save-page tab: 0 is the common route (共通线), each further index a heroine
+  /// route. Slots are grouped by the route recorded inside each save file.
+  @State private var selectedPage = 0
   private var automatic: [SaveSlot] { game.slots.filter { $0.slot == 9 } }
   private var manual: [SaveSlot] { game.slots.filter { $0.slot != 9 }.sorted { $0.slot < $1.slot } }
   private var canSave: Bool { !(game.snapshot?.title ?? true) && game.snapshot?.blocked == nil }
+  /// One page per route: index 0 is always the common route. Beyond the
+  /// declared routes, any slot that recorded an out-of-range route still gets a
+  /// page so its save stays reachable instead of disappearing.
+  private var pageCount: Int {
+    let declared = max(1, game.routeNames.count)
+    let highest = manual.map(\.page).max() ?? 0
+    return max(declared, highest + 1)
+  }
+  private var pagedManual: [SaveSlot] {
+    manual.filter { $0.page == selectedPage }
+  }
 
   var body: some View {
     GeometryReader { proxy in page(width: proxy.size.width) }
       .modifier(LibrarySurface(width: 720))
-      .onAppear { game.beginSavePreviews() }
+      .onAppear {
+        game.beginSavePreviews()
+        // When saving, open on the page that matches the route being played so
+        // a heroine-route save lands on its own page by default.
+        if saving { selectedPage = max(0, game.snapshot?.flow?.route ?? 0) }
+      }
       .onDisappear { game.endSavePreviews() }
       .onChange(of: phase) { if $0 == .active { game.reloadSaves() } }
       .confirmationDialog(
@@ -540,14 +560,28 @@ struct SaveManager: View {
                 ForEach(automatic) { slot in card(slot, width: width) }
               }
             }
-            if !manual.isEmpty {
+            if saving || !manual.isEmpty {
               VStack(alignment: .leading, spacing: 10) {
                 Text("手动存档").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                LazyVGrid(
-                  columns: [GridItem(.adaptive(minimum: 260), spacing: 12, alignment: .top)],
-                  spacing: 12
-                ) {
-                  ForEach(manual) { slot in card(slot, width: width) }
+                if pageCount > 1 {
+                  Picker("路线", selection: $selectedPage) {
+                    ForEach(0..<pageCount, id: \.self) { index in
+                      Text(game.routeTitle(index)).tag(index)
+                    }
+                  }
+                  .pickerStyle(.segmented)
+                  .accessibilityIdentifier("save-page-picker")
+                }
+                if pagedManual.isEmpty {
+                  Text("这一页还没有存档。").font(.callout).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center).padding(.vertical, 24)
+                } else {
+                  LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 260), spacing: 12, alignment: .top)],
+                    spacing: 12
+                  ) {
+                    ForEach(pagedManual) { slot in card(slot, width: width) }
+                  }
                 }
               }
             }

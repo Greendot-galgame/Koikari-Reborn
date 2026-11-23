@@ -48,6 +48,7 @@ final class GameplayMenuFakeGame {
   var stoppedFastForward = 0
   var collectionRequests: [Bool] = []
   var voicePlaybackStarts = 0
+  var autoPlay = false
 
   var permitsPlayback: Bool {
     !modalOpen && !importing && error == nil && foreground && !requiresUserResume
@@ -57,6 +58,10 @@ final class GameplayMenuFakeGame {
     if fastForward { stoppedFastForward += 1 }
     fastForward = false
   }
+  func stopAutoPlay() {
+    calls.append(Call(name: "stopAuto", blocked: modalOpen))
+    autoPlay = false
+  }
   func resumePendingVideo() { calls.append(Call(name: "resume", blocked: modalOpen)) }
   func replayVoice() {
     calls.append(Call(name: "voice", blocked: modalOpen))
@@ -65,6 +70,10 @@ final class GameplayMenuFakeGame {
   func toggleMute() {
     calls.append(Call(name: "mute", blocked: modalOpen))
     muted.toggle()
+  }
+  func toggleAutoPlay() {
+    calls.append(Call(name: "autoPlay", blocked: modalOpen))
+    autoPlay.toggle()
   }
   func reloadSaves() {
     calls.append(Call(name: "saves", blocked: modalOpen))
@@ -89,8 +98,8 @@ struct GameplayMenuChecks {
       assertions += 1
     }
     let actions = GameplayMenuAction.allCases
-    expect(actions.count == 9, "Every existing gameplay menu action is represented")
-    expect(Set(actions.map(\.rawValue)).count == 9, "Stable action identifiers are unique")
+    expect(actions.count == 10, "Every existing gameplay menu action is represented")
+    expect(Set(actions.map(\.rawValue)).count == 10, "Stable action identifiers are unique")
 
     var idle = GameplayMenuPresentation()
     expect(!idle.isPresented && !idle.blocksGameplay, "Initial phase is closed")
@@ -141,11 +150,13 @@ struct GameplayMenuChecks {
       expect(h.game.gateWrites == [true], "No pre-dismissal unblock or duplicate gate write")
       h.finishGameplayMenu()
       expect(!h.gameplayMenu.blocksGameplay, "Menu ownership ends after actual dismissal")
-      let isPlaybackAction = action == .replayVoice || action == .toggleMute
+      let isPlaybackAction =
+        action == .replayVoice || action == .toggleMute || action == .autoPlay
       if isPlaybackAction {
         expect(!h.destinations.contains(true), "Playback actions do not present a sheet")
         expect(h.game.gateWrites == [true, false], "Non-modal action releases the gate")
-        let name = action == .replayVoice ? "voice" : "mute"
+        let name =
+          action == .replayVoice ? "voice" : (action == .toggleMute ? "mute" : "autoPlay")
         expect(
           h.game.calls.last == GameplayMenuFakeGame.Call(name: name, blocked: false),
           "Playback action runs after unblocking")
@@ -154,6 +165,7 @@ struct GameplayMenuChecks {
           h.game.voicePlaybackStarts == (action == .replayVoice ? 1 : 0), "Voice can actually start"
         )
         expect(h.game.muted == (action == .toggleMute), "Mute toggles exactly once")
+        expect(h.game.autoPlay == (action == .autoPlay), "Auto-play toggles exactly once")
       } else {
         expect(h.destinations.filter { $0 }.count == 1, "Exactly one destination is presented")
         expect(h.game.modalOpen && h.game.gateWrites == [true], "No unpaused handoff frame")
@@ -179,10 +191,10 @@ struct GameplayMenuChecks {
             "Library loads while paused")
         }
       }
-      let before = ["saves", "collection", "voice", "mute"].map { h.game.count($0) }
+      let before = ["saves", "collection", "voice", "mute", "autoPlay"].map { h.game.count($0) }
       h.finishGameplayMenu()
       expect(
-        before == ["saves", "collection", "voice", "mute"].map { h.game.count($0) },
+        before == ["saves", "collection", "voice", "mute", "autoPlay"].map { h.game.count($0) },
         "Repeated onDismiss never repeats an action")
       expect(h.game.stoppedFastForward == 1, "Only one running fast-forward session was stopped")
     }
@@ -243,7 +255,7 @@ struct GameplayMenuChecks {
       expect(!h.destinations.contains(true), "Late error cancels queued destination")
       expect(h.game.modalOpen && h.game.gateWrites == [true], "Late error retains the blocker")
       expect(
-        ["saves", "collection", "voice", "mute"].allSatisfy { h.game.count($0) == 0 },
+        ["saves", "collection", "voice", "mute", "autoPlay"].allSatisfy { h.game.count($0) == 0 },
         "Late error does not execute stale action")
     }
     for importInProgress in [true, false] {

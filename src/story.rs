@@ -522,6 +522,22 @@ impl Engine {
         self.enter_event(0)?;
         self.advance()
     }
+    /// Number of declared routes. Route 0 is the common route; indices beyond
+    /// that are heroine routes in event-list order.
+    pub fn routes_len(&self) -> usize {
+        self.database.routes.len()
+    }
+    /// Resolved display title for a route index recorded on a save. Route
+    /// metadata may omit a title (placeholder rows), in which case a stable
+    /// positional name is synthesized. Index 0 is the common route.
+    pub fn route_title(&self, route: usize) -> Option<String> {
+        self.database.routes.get(route).map(|r| {
+            r.title
+                .clone()
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| format!("路线 {}", route + 1))
+        })
+    }
     fn program(&mut self, name: &str) -> Result<&Vec<Token>> {
         if !self.programs.contains_key(name) {
             let source = self.assets.text(name).map_err(|e| e.to_string())?;

@@ -8,7 +8,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const VERSION: u32 = 2;
 const LIMIT: u64 = 4 * 1024 * 1024;
-pub const SLOTS: [u32; 7] = [1, 2, 3, 4, 5, 6, 9];
+/// Slot 9 is the dedicated autosave ("自动进度"); every other listed slot is a
+/// manual slot. Manual slots are shared across route pages — the save page a
+/// slot appears on is decided by the route recorded inside the save, not the
+/// slot number.
+pub const SLOTS: [u32; 24] = [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+];
 static TEMPORARY: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Serialize)]
@@ -20,6 +26,11 @@ pub struct SaveInfo {
     pub pages: u64,
     pub speaker: String,
     pub text: String,
+    /// Route index recorded inside the save (`state.flow.route`). `None` means
+    /// the save predates route tracking or sits on the common route.
+    pub route: Option<usize>,
+    /// Resolved route display name; `None` for the common route.
+    pub route_name: Option<String>,
     pub error: Option<String>,
     /// SHA256 of the exact bounded, validated save bytes; never a timestamp or
     /// reserialization. None when the saved scene cannot be previewed faithfully.
@@ -43,6 +54,8 @@ pub fn catalog(
                 pages: 0,
                 speaker: String::new(),
                 text: String::new(),
+                route: None,
+                route_name: None,
                 error: None,
                 preview_revision: None,
             };
@@ -67,6 +80,7 @@ pub fn catalog(
                         info.pages = state.pages;
                         info.speaker = state.scene.speaker;
                         info.text = state.scene.text.chars().take(160).collect();
+                        info.route = state.flow.route;
                     }
                     Err(error) => info.error = Some(error),
                 }
@@ -423,7 +437,8 @@ mod tests {
     fn malformed_missing_and_wrong_version_rejected() {
         let d = tempfile::tempdir().unwrap();
         assert!(read(d.path(), 1, "a").is_err());
-        assert!(write(d.path(), 10, "a", &State::default()).is_err());
+        // Slots 1..=24 are all valid; a slot outside the set must be rejected.
+        assert!(write(d.path(), 99, "a", &State::default()).is_err());
         std::fs::write(
             d.path().join("slot-1.json"),
             br#"{"version":99,"assets":"a","state":{}}"#,
@@ -457,7 +472,7 @@ mod tests {
             .all(|s| s.exists && !s.compatible && s.error.is_some()));
         assert!(entries
             .iter()
-            .filter(|s| (4..=6).contains(&s.slot))
+            .filter(|s| (4..=8).contains(&s.slot) || (10..=24).contains(&s.slot))
             .all(|s| !s.exists));
         assert_eq!(latest(&catalog(d.path(), "missing", |_| Ok(()))), None);
         assert_eq!(

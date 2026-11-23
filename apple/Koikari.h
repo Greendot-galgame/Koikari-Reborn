@@ -14,6 +14,8 @@ int32_t kr_has_save(Host *handle);
 // SaveInfo JSON includes optional preview_revision: lowercase SHA256 of exact
 // bounded validated save bytes; null for unsupported/unsafe preview states.
 char *kr_saves(Host *handle);
+// Route titles by index for the save-page tab bar (index 0 = common route).
+char *kr_routes(Host *handle);
 typedef struct SavePreview SavePreview;
 // Main-thread-only capture from the persisted slot, NOT current live scene.
 // Exact-check revision from kr_saves; reject changed/corrupt/incompatible/legacy

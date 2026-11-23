@@ -249,7 +249,8 @@ fn invalid_runtime_is_rejected_without_overwriting_manual_slot() {
     bad = good.clone();
     bad.scene.bgm.volume = Some(f32::NAN);
     assert!(save::write(dir.path(), 1, "a", &bad).is_err());
-    assert!(save::write(dir.path(), 7, "a", &good).is_err());
+    // Slots 1..=24 are all valid; only a slot outside the set is rejected.
+    assert!(save::write(dir.path(), 99, "a", &good).is_err());
     assert_eq!(save::read(dir.path(), 1, "a").unwrap(), good);
 }
 
