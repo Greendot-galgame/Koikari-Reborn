@@ -1950,9 +1950,10 @@ struct Content: View {
             && state.scene.video == nil && !state.finished && !game.interfaceHidden
             && !(state.scene.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
               && state.scene.speaker.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-          let panelY: CGFloat = min(
-            geometry.size.height - panelHeight / 2 - 8,
-            max(panelHeight / 2 + 8, top + height - panelHeight / 2 - height * 0.035))
+          let halfPanel = panelHeight / 2
+          let lowerBound: CGFloat = geometry.size.height - halfPanel - 8
+          let insetBottom: CGFloat = top + height - halfPanel - height * 0.035
+          let panelY = min(lowerBound, max(halfPanel + 8, insetBottom))
           if showReadingBox {
             GameReadingPanel(
               speaker: state.scene.speaker, text: state.scene.text, page: state.pages,
