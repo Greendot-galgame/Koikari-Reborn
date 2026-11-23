@@ -62,6 +62,7 @@ struct GameplayMenuSheet: View {
           entry(.settings, "设置", "slider.horizontal.3")
         }
         Section("其他") {
+          entry(.storyTree, "剧情树", "list.bullet.indent").disabled(!hasLibrary)
           entry(.gallery, "CG 鉴赏", "photo.on.rectangle").disabled(!hasLibrary)
           entry(.replay, "场景回想", "play.rectangle").disabled(!hasLibrary)
           entry(.diagnostics, "兼容状态", "info.circle")
@@ -811,5 +812,177 @@ private struct SaveSlotThumbnail: View {
       loadedIdentity = nil
       unavailable = false
     }
+  }
+}
+
+/// Chapter/branch picker backed by the engine's flow-tree projection. Nodes are
+/// events grouped by route; choice nodes expand to show their branch edges.
+/// Jumping autosaves (slot 9) then restarts a clean non-replay run of the target.
+struct StoryTreeSheet: View {
+  @ObservedObject var game: Game
+  @Environment(\.dismiss) private var dismiss
+  @State private var pending: PendingJump?
+  @State private var confirm = false
+  /// Routes whose section body is expanded; the common route starts open.
+  @State private var expanded: Set<Int> = [0]
+  /// Choice nodes whose branch rows are shown.
+  @State private var openChoices: Set<Int> = []
+
+  private enum PendingJump {
+    case event(Int)
+    case choice(selection: Int, choice: Int)
+    var title: String {
+      switch self {
+      case .event: return "这一章节"
+      case .choice: return "这个分支"
+      }
+    }
+  }
+
+  private var tree: FlowTree? { game.flowTree }
+
+  var body: some View {
+    VStack(spacing: 0) {
+      GameSheetHeader(title: "剧情树", closeIdentifier: "close-story-tree") { dismiss() }
+      if let tree, !tree.nodes.isEmpty {
+        List {
+          ForEach(Array(tree.routes.indices), id: \.self) { route in
+            routeSection(tree: tree, route: route)
+          }
+        }
+      } else {
+        LibraryEmptyState(
+          title: "暂无剧情节点", symbol: "list.bullet.indent",
+          detail: "开始游玩后，章节与分支会按进度解锁显示在这里。")
+      }
+    }
+    .modifier(LibrarySurface(width: 640))
+    .confirmationDialog(
+      "跳转到\(pending?.title ?? "")？当前自动进度会更新，手动存档保留。",
+      isPresented: $confirm, titleVisibility: .visible
+    ) {
+      Button("跳转") {
+        guard let pending else { return }
+        switch pending {
+        case .event(let event): game.jumpToEvent(event)
+        case .choice(let selection, let choice):
+          game.jumpToChoice(selection: selection, choice: choice)
+        }
+        dismiss()
+      }
+      Button("取消", role: .cancel) { pending = nil }
+    }
+  }
+
+  @ViewBuilder private func routeSection(tree: FlowTree, route: Int) -> some View {
+    let nodes = tree.nodes.filter { $0.route == route }
+    DisclosureGroup(isExpanded: binding(for: route)) {
+      ForEach(nodes) { node in
+        nodeRow(tree: tree, node: node)
+      }
+    } label: {
+      HStack {
+        Text(route == 0 ? "共通线" : tree.routes[route])
+          .font(.subheadline.weight(.semibold))
+        Spacer(minLength: 8)
+        let done = nodes.filter { $0.unlocked }.count
+        Text("\(done)/\(nodes.count)").font(.caption.monospacedDigit())
+          .foregroundStyle(.secondary)
+      }
+    }
+  }
+
+  private func binding(for route: Int) -> Binding<Bool> {
+    Binding(
+      get: { expanded.contains(route) },
+      set: { if $0 { expanded.insert(route) } else { expanded.remove(route) } })
+  }
+
+  @ViewBuilder private func nodeRow(tree: FlowTree, node: FlowNode) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      Button {
+        if node.unlocked { ask(.event(node.event)) }
+      } label: {
+        HStack(spacing: 10) {
+          Image(systemName: symbol(node))
+            .foregroundStyle(node.unlocked ? GameTheme.accent : .secondary)
+            .frame(width: 20).accessibilityHidden(true)
+          Text(node.title.isEmpty ? "事件 \(node.event)" : node.title)
+            .foregroundStyle(node.unlocked ? .primary : .secondary)
+            .lineLimit(1)
+          Spacer(minLength: 8)
+          if node.visited {
+            Image(systemName: "checkmark.circle.fill")
+              .foregroundStyle(GameTheme.success).font(.caption)
+              .accessibilityLabel("已读")
+          }
+          if node.kind == "choice" {
+            Button {
+              toggleChoice(node.event)
+            } label: {
+              Image(systemName: openChoices.contains(node.event)
+                    ? "chevron.up" : "chevron.down")
+            }
+            .buttonStyle(.borderless).accessibilityLabel("展开分支")
+          }
+        }
+        .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .disabled(!node.unlocked)
+      .accessibilityIdentifier("tree-node-\(node.event)")
+      if openChoices.contains(node.event) {
+        ForEach(node.edges.filter { $0.label != nil }) { edge in
+          branchRow(node: node, edge: edge)
+        }
+      }
+    }
+  }
+
+  @ViewBuilder private func branchRow(node: FlowNode, edge: FlowEdge) -> some View {
+    Button {
+      if edge.jumpable, let sel = edge.selection, let ch = edge.choice {
+        ask(.choice(selection: sel, choice: ch))
+      }
+    } label: {
+      HStack(spacing: 8) {
+        Image(systemName: edge.walked ? "arrow.triangle.branch" : "circle.dashed")
+          .font(.caption2)
+          .foregroundStyle(edge.walked ? GameTheme.accent : .secondary)
+          .frame(width: 16).accessibilityHidden(true)
+        Text(edge.label ?? "")
+          .font(.callout)
+          .foregroundStyle(edge.walked ? .primary : .secondary)
+        Spacer(minLength: 8)
+        if edge.walked {
+          Text("已选").font(.caption2).foregroundStyle(GameTheme.success)
+        }
+      }
+      .padding(.leading, 30)
+      .frame(maxWidth: .infinity, minHeight: 26, alignment: .leading)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .disabled(!edge.jumpable)
+    .accessibilityIdentifier("tree-branch-\(edge.selection ?? -1)-\(edge.choice ?? -1)")
+  }
+
+  private func symbol(_ node: FlowNode) -> String {
+    switch node.kind {
+    case "choice": return "arrow.triangle.branch"
+    case "ending": return "flag.checkered"
+    default: return "book.closed"
+    }
+  }
+
+  private func toggleChoice(_ event: Int) {
+    if openChoices.contains(event) { openChoices.remove(event) }
+    else { openChoices.insert(event) }
+  }
+
+  private func ask(_ jump: PendingJump) {
+    pending = jump
+    confirm = true
   }
 }

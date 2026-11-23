@@ -30,6 +30,195 @@ pub struct Route {
     pub previous: Option<String>,
     pub terminal: bool,
 }
+
+/// A read-only projection of the event/selection graph as a navigable tree.
+/// The database is authoritative; the tree is rebuilt on demand from `progress`
+/// and never persists additional state.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct FlowTree {
+    /// Display titles per route index; `route_title` already synthesizes a name
+    /// for placeholder rows. Index 0 is the common route.
+    pub routes: Vec<String>,
+    /// `nodes` indices of each route's entry point, parallel to `routes`.
+    pub roots: Vec<usize>,
+    pub nodes: Vec<FlowNode>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FlowNodeKind {
+    /// A linear segment start: the common-route head or a route's `previous`.
+    Chapter,
+    /// A choice point: this event's script hosts a selection with destinations.
+    Choice,
+    /// `event.terminal`: the end of a route.
+    Ending,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct FlowEdge {
+    /// Selection text when this edge is a branch; `None` for linear `next`.
+    pub label: Option<String>,
+    /// `(selection_id, choice_id)` when this edge comes from a choice point.
+    pub selection: Option<usize>,
+    pub choice: Option<usize>,
+    /// `nodes` index of the destination; `None` when the edge is a dead end
+    /// (terminal event, or a selection destination the database left empty).
+    pub to: Option<usize>,
+    /// The player took this branch before (`selection:{sel}:{choice}` flag).
+    pub walked: bool,
+    /// The destination event has been read (and may be jumped to).
+    pub unlocked: bool,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct FlowNode {
+    /// `Database::events` index this node was projected from.
+    pub event: usize,
+    pub route: usize,
+    pub kind: FlowNodeKind,
+    pub title: String,
+    /// `progress.events` contains this event's script.
+    pub visited: bool,
+    /// The player may jump to this node (visited, or an ending/walked edge).
+    pub unlocked: bool,
+    pub edges: Vec<FlowEdge>,
+}
+
+/// Where `Engine::start_from` should enter the tree.
+#[derive(Clone, Copy, Debug)]
+pub enum FlowTarget {
+    /// Jump to the start of `events[index]` (a Chapter or ChoicePoint node).
+    Event(usize),
+    /// Enter the event that hosts `selection` and immediately take `choice`.
+    Choice { selection: usize, choice: usize },
+}
+
+/// Route the tree should mark as unlocked because the player reached it.
+fn route_unlocked(progress: &crate::model::Progress, route: usize) -> bool {
+    progress.endings.contains(&format!("route:{route}"))
+}
+
+impl Database {
+    /// Project the event/selection graph into a tree the UI can draw and the
+    /// engine can jump into. `progress` decides visited/walked/unlocked; the
+    /// result is derived, so it is rebuilt per call and never stored.
+    pub fn flow_tree(&self, progress: &crate::model::Progress) -> FlowTree {
+        let routes: Vec<String> = self
+            .routes
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                r.title
+                    .clone()
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or_else(|| format!("路线 {}", i + 1))
+            })
+            .collect();
+        // Which event index each selection lives on; selections[].script is an
+        // event script, so a node's choice edges come from its own selections.
+        let mut choice_events: std::collections::BTreeMap<usize, Vec<usize>> =
+            std::collections::BTreeMap::new();
+        for (sel_id, sel) in self.selections.iter().enumerate() {
+            if let Some(event) = self.index(&sel.script) {
+                choice_events.entry(event).or_default().push(sel_id);
+            }
+        }
+        // Roots: each route's entry event index. Route 0 is the common head
+        // (event 0); route i starts at the event its `previous` points at,
+        // falling back to the first event of that route when the metadata is a
+        // placeholder. Computed before the node loop so `is_route_head` and
+        // `roots` share one source of truth.
+        let mut roots = Vec::with_capacity(routes.len());
+        for (route, _) in routes.iter().enumerate() {
+            let root = if route == 0 {
+                Some(0)
+            } else {
+                self.routes
+                    .get(route)
+                    .and_then(|r| r.previous.as_ref())
+                    .and_then(|prev| self.index(prev))
+                    .or_else(|| self.events.iter().position(|e| e.route == route))
+            };
+            if let Some(root) = root {
+                roots.push(root);
+            }
+        }
+        let mut nodes = Vec::with_capacity(self.events.len());
+        for (index, event) in self.events.iter().enumerate() {
+            let visited = progress.events.contains(&event.script);
+            let mut edges = Vec::new();
+            if let Some(sel_ids) = choice_events.get(&index) {
+                for &sel_id in sel_ids {
+                    let sel = &self.selections[sel_id];
+                    for (choice_id, (label, destination)) in sel
+                        .text
+                        .iter()
+                        .zip(sel.destinations.iter())
+                        .enumerate()
+                    {
+                        let to = if destination.is_empty() {
+                            None
+                        } else {
+                            self.index(destination)
+                        };
+                        let walked = progress
+                            .variables
+                            .get(&format!("selection:{sel_id}:{choice_id}"))
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false);
+                        let unlocked = to
+                            .map(|d| progress.events.contains(&self.events[d].script))
+                            .unwrap_or(false);
+                        edges.push(FlowEdge {
+                            label: Some(label.clone()),
+                            selection: Some(sel_id),
+                            choice: Some(choice_id),
+                            to,
+                            walked,
+                            unlocked: unlocked || walked,
+                        });
+                    }
+                }
+            }
+            if let Ok(Some(next)) = self.next(index) {
+                let unlocked = progress.events.contains(&self.events[next].script);
+                edges.push(FlowEdge {
+                    label: None,
+                    selection: None,
+                    choice: None,
+                    to: Some(next),
+                    walked: unlocked,
+                    unlocked,
+                });
+            }
+            let kind = if event.terminal {
+                FlowNodeKind::Ending
+            } else if choice_events.contains_key(&index) {
+                FlowNodeKind::Choice
+            } else {
+                FlowNodeKind::Chapter
+            };
+            // A node is jumpable when the player has read it or reached its
+            // route's ending. Route heads are also open: the common head is the
+            // new-game entry, and a heroine route's head is open once its route
+            // is reachable — which `route_done` already covers — so heads are
+            // jumpable only when visited or their route is done.
+            let route_done = route_unlocked(progress, event.route);
+            let is_common_head = index == 0;
+            nodes.push(FlowNode {
+                event: index,
+                route: event.route,
+                kind,
+                title: event.title.clone(),
+                visited,
+                unlocked: visited || route_done || is_common_head,
+                edges,
+            });
+        }
+        FlowTree { routes, roots, nodes }
+    }
+}
 fn string(v: Option<&Value>) -> Result<String> {
     v.and_then(Value::as_str)
         .map(str::to_owned)
@@ -236,5 +425,45 @@ mod tests {
         assert_eq!(db.routes[1].title.as_deref(), Some("Route"));
         assert!(db.routes[2].title.is_none());
         assert!(Database::parse(&source.replace("'last',1", "'last',8")).is_err());
+    }
+    #[test]
+    fn flow_tree_projects_routes_choices_and_progress() {
+        let source = "lf.EV_RouteInfo=[['Common','End','Next'],['heroine','a1','End']];\n\
+            lf.EV_EventListInfo=[\
+              ['a1',0,-1,'a2',[-1,-1],'共通 1'],\
+              ['a2',0,-1,'h1',[-1,-1],'共通 2'],\
+              ['h1',1,-1,'End',[-1,-1],'女主 1']];\n\
+            lf.EV_SelectListInfo=[['a2',['h1',''],0,-1,['去女主线','留共通']]];";
+        let db = Database::parse(source).unwrap();
+        let mut progress = crate::model::Progress::default();
+        progress.events.insert("a1".into());
+        progress.events.insert("a2".into());
+        progress
+            .variables
+            .insert("selection:0:0".into(), serde_json::Value::Bool(true));
+        let tree = db.flow_tree(&progress);
+        assert_eq!(tree.routes, vec!["Common".to_string(), "heroine".to_string()]);
+        assert_eq!(tree.roots.len(), 2);
+        // a1: linear chapter, visited and unlocked, edge to a2.
+        assert!(tree.nodes[0].visited && tree.nodes[0].unlocked);
+        assert_eq!(tree.nodes[0].edges.len(), 1);
+        assert_eq!(tree.nodes[0].edges[0].to, Some(1));
+        // a2: choice point; the first branch leads to h1 and was walked.
+        assert!(matches!(tree.nodes[1].kind, FlowNodeKind::Choice));
+        let branch = &tree.nodes[1].edges[0];
+        assert_eq!(branch.selection, Some(0));
+        assert_eq!(branch.choice, Some(0));
+        assert!(branch.walked && branch.unlocked);
+        // a2 also carries a linear edge to h1 (its `next`), so it has both the
+        // two labelled branches and one unlabelled linear edge.
+        assert!(tree.nodes[1].edges.iter().any(|e| e.label.is_none() && e.to == Some(2)));
+        // h1 is an unread route head: locked until its route ending is hit or
+        // it is read via the branch from a2.
+        assert!(matches!(tree.nodes[2].kind, FlowNodeKind::Ending));
+        assert!(!tree.nodes[2].visited && !tree.nodes[2].unlocked);
+        // Once the route ending is recorded the head becomes re-jumpable.
+        progress.endings.insert("route:1".into());
+        let tree = db.flow_tree(&progress);
+        assert!(tree.nodes[2].unlocked);
     }
 }

@@ -58,6 +58,36 @@ struct CollectionEntry: Decodable, Identifiable {
   var unlocked: Bool
   var preview: String? = nil
 }
+// Story flow-tree projection from kr_flow_tree: a read-only derived view of the
+// event/selection graph, rebuilt per call from live progress.
+struct FlowTree: Decodable {
+  var routes: [String]
+  var roots: [Int]
+  var nodes: [FlowNode]
+}
+struct FlowNode: Decodable, Identifiable {
+  var event: Int
+  var route: Int
+  var kind: String  // "chapter" | "choice" | "ending"
+  var title: String
+  var visited: Bool
+  var unlocked: Bool
+  var edges: [FlowEdge]
+  var id: Int { event }
+}
+struct FlowEdge: Decodable, Identifiable {
+  var label: String?
+  var selection: Int?
+  var choice: Int?
+  var to: Int?
+  var walked: Bool
+  var unlocked: Bool
+  var id: String {
+    "e\(selection.map(String.init) ?? "n")-\(choice.map(String.init) ?? "n")-\(to.map(String.init) ?? "x")"
+  }
+  /// A labeled branch the player actually took can be re-entered directly.
+  var jumpable: Bool { selection != nil && choice != nil && walked }
+}
 struct Dialogue: Decodable {
   struct Visual: Decodable {
     var elapsedMs: UInt64
@@ -713,7 +743,7 @@ struct AudioFailurePolicy {
     if action.hasPrefix("choose:"), !canChoose { return false }
     if action == "title" || action == "new" || action == "continue" || action == "load"
       || action.hasPrefix("load:") || action == "back" || action.hasPrefix("rewind:")
-      || action.hasPrefix("replay:")
+      || action.hasPrefix("replay:") || action.hasPrefix("jump:")
     {
       revealInterface()
     }
@@ -726,15 +756,16 @@ struct AudioFailurePolicy {
     }
     let loading = action == "continue" || action == "load" || action.hasPrefix("load:")
     let rewinding = action == "back" || action.hasPrefix("rewind:")
+    let jumping = action.hasPrefix("jump:")
     if loading || rewinding { renderFailed = false }
     refresh(
-      forceAudio: loading || rewinding || action == "new" || action == "title"
+      forceAudio: loading || rewinding || jumping || action == "new" || action == "title"
         || action.hasPrefix("replay:"))
     lastFrame = nil
     // Auto-play and fast-forward must not autosave on every page; that would
     // churn the autosave slot and thrash the save thumbnails each tick.
     if ok && !fastForward && !autoPlay
-      && (loading || rewinding || action == "new" || action == "advance"
+      && (loading || rewinding || jumping || action == "new" || action == "advance"
         || action.hasPrefix("choose:") || action.hasPrefix("video-complete:")
         || action.hasPrefix("replay:"))
     {
@@ -998,6 +1029,35 @@ struct AudioFailurePolicy {
       self.error = "鉴赏列表读取失败：\(error.localizedDescription)"
       return false
     }
+  }
+  /// Fetch the story flow tree for the chapter/branch picker. Pure read-only:
+  /// the tree is derived from progress and rebuilt per call, never stored.
+  @Published var flowTree: FlowTree?
+  @discardableResult func reloadFlowTree() -> Bool {
+    stopFastForward()
+    stopAutoPlay()
+    guard let handle else { return false }
+    guard let json = kr_flow_tree(handle) else {
+      error = rustError()
+      return false
+    }
+    defer { kr_string_free(json) }
+    do {
+      flowTree = try JSONDecoder().decode(
+        FlowTree.self, from: Data(String(cString: json).utf8))
+      return true
+    } catch {
+      self.error = "剧情树读取失败：\(error.localizedDescription)"
+      return false
+    }
+  }
+  /// Jump to an unlocked story node or a walked branch. The engine autosaves
+  /// first (slot 9), then resets to a clean non-replay run of that target.
+  func jumpToEvent(_ event: Int) {
+    _ = action("jump:event:\(event)")
+  }
+  func jumpToChoice(selection: Int, choice: Int) {
+    _ = action("jump:choice:\(selection):\(choice)")
   }
   // Reads owned bytes on the main actor; the bounded thumbnail worker decodes off-thread.
   // Neither thumbnails nor their failures invoke a story action or change the CG preview.
@@ -1536,6 +1596,7 @@ struct Content: View {
   @State private var newGame = false
   @State private var showCollection = false
   @State private var collectionIsReplay = false
+  @State private var showStoryTree = false
   @State private var gameplayMenu = GameplayMenuPresentation()
   @Environment(\.scenePhase) private var phase
   @ScaledMetric(relativeTo: .body) private var readingTypeSize: CGFloat = 18
@@ -1870,6 +1931,9 @@ struct Content: View {
     .sheet(isPresented: $showCollection) {
       CollectionMenu(game: game, replay: collectionIsReplay)
     }
+    .sheet(isPresented: $showStoryTree) {
+      StoryTreeSheet(game: game)
+    }
     .sheet(isPresented: $showHistory) {
       Backlog(game: game)
     }
@@ -2034,6 +2098,7 @@ struct Content: View {
           }
           .accessibilityIdentifier("settings")
           Divider()
+          Button("剧情树") { openStoryTree() }.disabled(game.handle == nil)
           Button("CG 鉴赏") { openCollection(replay: false) }.disabled(game.handle == nil)
           Button("场景回想") { openCollection(replay: true) }.disabled(game.handle == nil)
           Button("兼容状态") { showDiagnostics = true }
@@ -2061,7 +2126,8 @@ struct Content: View {
 
   private var hasPresentedModal: Bool {
     importing || showHistory || showDiagnostics || returnToTitle || showSaves || showSettings
-      || newGame || showCollection || game.error != nil || gameplayMenu.blocksGameplay
+      || newGame || showCollection || showStoryTree || game.error != nil
+      || gameplayMenu.blocksGameplay
   }
 
   private func synchronizeModalState() {
@@ -2098,6 +2164,7 @@ struct Content: View {
     case .save: openSaves(saving: true)
     case .load: openSaves(saving: false)
     case .settings: showSettings = true
+    case .storyTree: openStoryTree()
     case .gallery: openCollection(replay: false)
     case .replay: openCollection(replay: true)
     case .diagnostics: showDiagnostics = true
@@ -2127,6 +2194,9 @@ struct Content: View {
   private func openCollection(replay: Bool) {
     collectionIsReplay = replay
     if game.reloadCollection(replay: replay) { showCollection = true }
+  }
+  private func openStoryTree() {
+    if game.reloadFlowTree() { showStoryTree = true }
   }
   private func document(_ title: String, text: String, close: @escaping () -> Void) -> some View {
     GameDocumentSheet(title: title, text: text, close: close)

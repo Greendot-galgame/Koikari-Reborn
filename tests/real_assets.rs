@@ -406,3 +406,55 @@ fn reported_station_closeup_stays_within_texture_budget() {
         renderer.peak_texture_bytes()
     );
 }
+
+#[test]
+#[ignore = "requires user-owned XP3; walks the real common route into a choice, then tree-jumps back"]
+fn story_tree_jump_reenters_a_walked_branch_with_real_state() {
+    use koikari_reborn::events::FlowTarget;
+    let mut engine = Engine::open(store()).unwrap();
+    // Sanity: the real database projects a non-empty tree whose common head is open.
+    let tree = engine.flow_tree();
+    assert!(!tree.nodes.is_empty() && !tree.roots.is_empty());
+    assert!(tree.nodes[0].unlocked);
+    // Drive the real story until the first genuine choice, then take branch 0.
+    engine.start().unwrap();
+    for _ in 0..6000 {
+        if !engine.state.flow.choices.is_empty() {
+            break;
+        }
+        step(&mut engine);
+    }
+    let (selection, _) = {
+        let id = engine.state.flow.selection_id.expect("reached a choice point");
+        (id, engine.state.flow.choices.clone())
+    };
+    let choice = engine.state.flow.choices[0].id;
+    engine.choose(choice).unwrap();
+    // Read a few pages into the branch so it is recorded as walked.
+    for _ in 0..40 {
+        if engine.state.finished {
+            break;
+        }
+        step(&mut engine);
+    }
+    assert_eq!(engine.state.flow.selected.get(&selection), Some(&choice));
+    // Jump back to the host event: it must be a normal, non-replay run that
+    // re-materializes the same choice list.
+    engine.start_from(FlowTarget::Event(engine.state.flow.event_id.unwrap())).unwrap();
+    assert!(!engine.state.title && !engine.state.flow.replay);
+    // Jump straight back into the walked branch and confirm the join resolves.
+    engine
+        .start_from(FlowTarget::Choice { selection, choice })
+        .unwrap();
+    assert!(!engine.state.flow.replay);
+    assert_eq!(engine.state.flow.selected.get(&selection), Some(&choice));
+    let mut guard = 0;
+    while engine.state.flow.event_id.is_some() && !engine.state.finished && guard < 4000 {
+        step(&mut engine);
+        guard += 1;
+    }
+    println!(
+        "tree jump: selection={selection} choice={choice} re-entered, event={:?}, finished={}",
+        engine.state.flow.event_id, engine.state.finished
+    );
+}

@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let directory = arguments
         .get(2)
-        .ok_or("usage: koikari <list|text|verify|walk|verify-all|verify-targets> ASSET_DIRECTORY [NAME|MAX_STEPS] [--max-states N --max-frontier N --max-snapshot-bytes N --max-frontier-bytes N --max-decisions N --tick-ms N]")?;
+        .ok_or("usage: koikari <list|text|verify|walk|tree|verify-all|verify-targets> ASSET_DIRECTORY [NAME|MAX_STEPS] [--max-states N --max-frontier N --max-snapshot-bytes N --max-frontier-bytes N --max-decisions N --tick-ms N]")?;
     let store = match Store::open(directory) {
         Ok(store) => store,
         Err(_) if verification => {
@@ -101,6 +101,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 engine.state.finished,
                 engine.state.warnings
             );
+        }
+        "tree" => {
+            // Dump the chapter/branch picker tree projected from the real
+            // database. No progress is loaded on the CLI, so every node shows
+            // the locked/unlocked defaults a fresh profile would see.
+            let engine = koikari_reborn::story::Engine::open(std::sync::Arc::new(store))?;
+            let tree = engine.flow_tree();
+            println!("{}", serde_json::to_string_pretty(&tree)?);
         }
         "verify-all" | "verify-targets" => {
             let mut limits = limits(&arguments).unwrap_or_else(|code| json_failure(code));

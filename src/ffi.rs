@@ -332,6 +332,7 @@ pub unsafe extern "C" fn kr_action(handle: *mut Host, action: *const c_char) -> 
                 "choose",
                 "replay",
                 "video-complete",
+                "jump",
             ]
             .contains(&command)
         {
@@ -386,6 +387,38 @@ pub unsafe extern "C" fn kr_action(handle: *mut Host, action: *const c_char) -> 
                     return Err("replay is locked or unknown".into());
                 }
                 h.engine.start_replay(id)?;
+            }
+            "jump" => {
+                // "event:{index}" or "choice:{selection}:{choice}" — enter the
+                // story tree at an unlocked node. Snapshot the live state into
+                // the autosave slot first so the player can step back out.
+                let spec = value.ok_or("missing jump target")?;
+                let target = if let Some(index) = spec.strip_prefix("event:") {
+                    crate::events::FlowTarget::Event(
+                        index.parse().map_err(|_| "invalid jump event")?,
+                    )
+                } else if let Some(pair) = spec.strip_prefix("choice:") {
+                    let (sel, ch) = pair
+                        .split_once(':')
+                        .ok_or("invalid jump choice")?;
+                    crate::events::FlowTarget::Choice {
+                        selection: sel.parse().map_err(|_| "invalid jump selection")?,
+                        choice: ch.parse().map_err(|_| "invalid jump branch")?,
+                    }
+                } else {
+                    return Err("unknown jump target".into());
+                };
+                if !(h.engine.state.title || h.engine.state.finished || h.engine.state.flow.replay)
+                {
+                    save::write_with_rollback(
+                        &h.saves,
+                        9,
+                        &h.engine.assets.fingerprint,
+                        &h.engine.state,
+                        &h.engine.previous_pages().cloned().collect::<Vec<_>>(),
+                    )?;
+                }
+                h.engine.start_from(target)?;
             }
             "video-complete" => {
                 let sequence = value
@@ -459,7 +492,7 @@ pub unsafe extern "C" fn kr_action(handle: *mut Host, action: *const c_char) -> 
         h.gallery_scene = None;
         h.sync_progress(matches!(
             command,
-            "new" | "title" | "back" | "rewind" | "load" | "continue" | "replay"
+            "new" | "title" | "back" | "rewind" | "load" | "continue" | "replay" | "jump"
         ))?;
         Ok(1)
     })
@@ -689,6 +722,20 @@ pub unsafe extern "C" fn kr_replays(handle: *mut Host) -> *mut c_char {
     run(|| {
         Ok(cstring(
             &serde_json::to_string(&host(handle)?.engine.replay_list()?)
+                .map_err(|e| e.to_string())?,
+        ))
+    })
+}
+/// Serialize the event/selection graph as a navigable tree for the chapter /
+/// branch picker. Nodes and edges carry `unlocked`/`walked` derived from
+/// progress, so the UI only needs `kr_action(handle, "jump:...")` to enter.
+/// # Safety
+/// Live exclusive main-thread handle. Returned JSON must be freed.
+#[no_mangle]
+pub unsafe extern "C" fn kr_flow_tree(handle: *mut Host) -> *mut c_char {
+    run(|| {
+        Ok(cstring(
+            &serde_json::to_string(&host(handle)?.engine.flow_tree())
                 .map_err(|e| e.to_string())?,
         ))
     })

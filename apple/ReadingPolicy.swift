@@ -53,8 +53,8 @@ enum ReadingInputPolicy {
 }
 
 enum GameplayMenuAction: String, CaseIterable, Sendable {
-  case save, load, autoPlay, replayVoice, toggleMute, settings, gallery, replay, diagnostics,
-    returnToTitle
+  case save, load, autoPlay, replayVoice, toggleMute, settings, storyTree, gallery, replay,
+    diagnostics, returnToTitle
 }
 
 /// Keep the game paused until UIKit has actually dismissed the menu. A selected

@@ -56,6 +56,10 @@ uint8_t *kr_gallery_image(Host *handle, const char *id, size_t *length);
 // Owned bytes: kr_bytes_free(bytes, length). Failure: NULL, zero length, kr_error.
 uint8_t *kr_replay_image(Host *handle, const char *id, size_t *length);
 char *kr_replays(Host *handle);
+// Story flow-tree projection: routes, per-route root event indices, and nodes
+// (event/route/kind/title/visited/unlocked/edges). Derived read-only; rebuild per
+// call. Jump via kr_action("jump:event:{i}" / "jump:choice:{sel}:{choice}").
+char *kr_flow_tree(Host *handle);
 // Preview only an unlocked CG, composed by the Rust Metal renderer.
 int32_t kr_gallery_show(Host *handle, const char *id);
 int32_t kr_gallery_hide(Host *handle);

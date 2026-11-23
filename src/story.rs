@@ -401,6 +401,110 @@ impl Engine {
         self.checkpoints.clear();
         Ok(())
     }
+    /// Read-only projection of the event/selection graph as a navigable tree.
+    /// Rebuilt from `progress` on every call; the database owns the shape.
+    pub fn flow_tree(&self) -> crate::events::FlowTree {
+        self.database.flow_tree(&self.state.progress)
+    }
+    /// Enter the story at a tree node the player has already unlocked.
+    ///
+    /// `Event(index)` starts a fresh, non-replay run of `events[index]`, exactly
+    /// like `start()` but at a later chapter. `Choice { selection, choice }`
+    /// jumps into the event that hosts that selection and immediately takes the
+    /// chosen branch, so `sl_endselect`/`sl_join`/`selected` are all produced by
+    /// real script execution and `validate_state` stays satisfied.
+    ///
+    /// In both cases the current run is replaced: `progress` (CG/endings/`sf.*`)
+    /// is kept, the checkpoint history is cleared, and the result is a normal
+    /// playable state — not a replay — so saves and endings work as usual.
+    /// Callers should snapshot the current state to the autosave slot first.
+    pub fn start_from(&mut self, target: crate::events::FlowTarget) -> Result<()> {
+        if self.state.flow.replay {
+            return Err("cannot enter the story tree during replay".into());
+        }
+        match target {
+            crate::events::FlowTarget::Event(index) => {
+                let unlocked = self
+                    .flow_tree()
+                    .nodes
+                    .iter()
+                    .find(|n| n.event == index)
+                    .map(|n| n.unlocked)
+                    .ok_or("unknown story event")?;
+                if !unlocked {
+                    return Err("story event is locked".into());
+                }
+                self.checkpoints.clear();
+                let progress = self.state.progress.clone();
+                let sequence = self.state.flow.video_sequence;
+                self.state = State {
+                    title: false,
+                    progress,
+                    ..State::default()
+                };
+                self.state.flow.revision = 1;
+                self.state.flow.video_sequence = sequence;
+                self.enter_event(index)?;
+                self.advance()
+            }
+            crate::events::FlowTarget::Choice { selection, choice } => {
+                let row = self
+                    .database
+                    .selections
+                    .get(selection)
+                    .ok_or("unknown story selection")?
+                    .clone();
+                if choice >= row.text.len() || row.destinations.get(choice).is_none() {
+                    return Err("story branch out of range".into());
+                }
+                let walked = self
+                    .state
+                    .progress
+                    .variables
+                    .get(&format!("selection:{selection}:{choice}"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                // Only a branch the player actually took may be re-entered
+                // directly; an unread branch of a visited event stays locked so
+                // the picker cannot skip past unexplored choices.
+                if !walked {
+                    return Err("story branch is locked".into());
+                }
+                let event = self
+                    .database
+                    .index(&row.script)
+                    .ok_or("selection hosts an unknown event")?;
+                self.checkpoints.clear();
+                let progress = self.state.progress.clone();
+                let sequence = self.state.flow.video_sequence;
+                self.state = State {
+                    title: false,
+                    progress,
+                    ..State::default()
+                };
+                self.state.flow.revision = 1;
+                self.state.flow.video_sequence = sequence;
+                self.enter_event(event)?;
+                // Materialize the same pending-choice state `sl_startselect`
+                // would have produced, projected from the database, then let
+                // `choose` perform the real `*SLP_*` jump so `selected`,
+                // `EV_SelectDirectJump` and `sl_join` resolve through normal
+                // script execution.
+                self.state.flow.selection_id = Some(selection);
+                self.state.flow.choices = row
+                    .text
+                    .iter()
+                    .enumerate()
+                    .map(|(id, text)| crate::model::Choice {
+                        id,
+                        text: text.clone(),
+                        enabled: true,
+                    })
+                    .collect();
+                self.choose(choice)
+            }
+        }
+    }
     pub fn open(assets: Arc<Store>) -> Result<Self> {
         let metadata = assets
             .text("Init_VariableSTAND.ks")

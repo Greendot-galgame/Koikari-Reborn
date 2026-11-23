@@ -147,6 +147,57 @@ fn database_drives_choices_joins_and_non_numeric_successors() {
 }
 
 #[test]
+fn story_tree_jumps_to_events_and_branches_with_real_state() {
+    use koikari_reborn::events::FlowTarget;
+    for choice in 0..2 {
+        let (_directory, mut engine) = fixture(
+            BRANCH,
+            &[
+                ("DB_EV.ks", BRANCH_DB.as_bytes()),
+                ("late.ks", b"Later[c]\n@SC_EndProcess"),
+            ],
+        );
+        // The common-route head is always open (jumping to it restarts the
+        // story); branch entries stay locked until walked or their event read.
+        assert!(engine.start_from(FlowTarget::Event(0)).is_ok());
+        engine.start().unwrap(); // reset the fresh Event(0) run back to intro
+        assert!(
+            engine
+                .start_from(FlowTarget::Choice {
+                    selection: 0,
+                    choice
+                })
+                .is_err()
+        );
+        // Play through the branch once so both the event and the branch unlock.
+        engine.start().unwrap();
+        engine.choose(choice).unwrap();
+        while !engine.state.finished {
+            engine.advance().unwrap();
+        }
+        // Re-entering the host event replays it as a normal, savable run.
+        engine.start_from(FlowTarget::Event(0)).unwrap();
+        assert!(!engine.state.title && !engine.state.flow.replay);
+        assert_eq!(engine.state.flow.event_id, Some(0));
+        assert_eq!(engine.state.flow.choices.len(), 2);
+        // A walked branch jumps straight into its SLP target and joins back.
+        engine
+            .start_from(FlowTarget::Choice {
+                selection: 0,
+                choice
+            })
+            .unwrap();
+        assert_eq!(
+            engine.state.flow.variables["f.branch"],
+            json!(if choice == 0 { 10 } else { 20 })
+        );
+        assert_eq!(engine.state.flow.selected.get(&0), Some(&choice));
+        engine.advance().unwrap();
+        assert_eq!(engine.state.scene.text, "Joined");
+    }
+}
+
+#[test]
 fn conditionals_script_blocks_macros_and_call_frames_survive_restore() {
     let script = r#"
 @iscript
