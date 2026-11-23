@@ -499,6 +499,12 @@ struct SaveManager: View {
   @Environment(\.dismiss) private var dismiss
   @State private var pending: SaveSlot?
   @State private var confirm = false
+  @State private var exportingBackup = false
+  @State private var exportingDocument = SaveBackupDocument()
+  @State private var importingBackup = false
+  @State private var importingReport: String?
+  @State private var confirmImport = false
+  @State private var pendingImportFile: URL?
   /// Save-page tab: 0 is the common route (共通线), each further index a heroine
   /// route. Slots are grouped by the route recorded inside each save file.
   @State private var selectedPage = 0
@@ -543,11 +549,84 @@ struct SaveManager: View {
         }
         Button("取消", role: .cancel) {}
       }
+      .confirmationDialog(
+        "导入将写入存档目录，同名槽位会被覆盖；不兼容资源的档仍会保留原样。确定继续？",
+        isPresented: $confirmImport, titleVisibility: .visible
+      ) {
+        Button("导入", role: .destructive) {
+          if let url = pendingImportFile { runImport(url) }
+        }
+        Button("取消", role: .cancel) { pendingImportFile = nil }
+      }
+      .fileExporter(
+        isPresented: $exportingBackup, document: exportingDocument,
+        contentType: SaveBackup.utType,
+        defaultFilename: "koikari-backup"
+      ) { result in
+        switch result {
+        case .success(let url):
+          game.inform("存档备份已导出：\(url.lastPathComponent)")
+        case .failure(let error):
+          game.inform("导出失败：\(error.localizedDescription)")
+        }
+      }
+      .fileImporter(
+        isPresented: $importingBackup, allowedContentTypes: [SaveBackup.utType]
+      ) { result in
+        switch result {
+        case .success(let url):
+          pendingImportFile = url
+          confirmImport = true
+        case .failure(let error):
+          game.inform("打开文件失败：\(error.localizedDescription)")
+        }
+      }
+      .alert("导入结果", isPresented: .constant(importingReport != nil)) {
+        Button("好") { importingReport = nil }
+      } message: {
+        Text(importingReport ?? "")
+      }
+  }
+
+  private func runImport(_ url: URL) {
+    let accessed = url.startAccessingSecurityScopedResource()
+    defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+    do {
+      let written = try SaveBackup.import(from: url, to: game.savesDirectory)
+      game.reloadSaves()
+      importingReport = "已导入 \(written.count) 个存档文件：\(written.joined(separator: "、"))。"
+    } catch {
+      importingReport = "导入失败：\(error.localizedDescription)"
+    }
+    pendingImportFile = nil
+    confirmImport = false
   }
 
   private func page(width: CGFloat) -> some View {
     VStack(spacing: 0) {
       GameSheetHeader(title: saving ? "保存进度" : "读取存档", closeIdentifier: "close-saves") { dismiss() }
+      HStack(spacing: 10) {
+        Button {
+          exportingDocument = SaveBackupDocument(source: game.savesDirectory)
+          exportingBackup = true
+        } label: {
+          Label("导出存档备份", systemImage: "square.and.arrow.up")
+        }
+        .buttonStyle(.bordered).controlSize(.regular)
+        .disabled(!game.slots.contains(where: { $0.exists }))
+        .accessibilityIdentifier("save-export")
+
+        Button {
+          importingBackup = true
+        } label: {
+          Label("导入存档备份", systemImage: "square.and.arrow.down")
+        }
+        .buttonStyle(.bordered).controlSize(.regular)
+        .accessibilityIdentifier("save-import")
+
+        Spacer()
+      }
+      .padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 4)
       if game.slots.isEmpty {
         LibraryEmptyState(title: "暂无存档", symbol: "tray", detail: "游戏中的进度可以保存到手动槽位。")
       } else {

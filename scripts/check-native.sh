@@ -109,6 +109,7 @@ compile_run artwork apple/OriginalUI.swift tests/ui_artwork.swift
 compile_run thumbnails apple/GalleryThumbnails.swift tests/gallery_thumbnails.swift
 compile_run save-thumbnails apple/GalleryThumbnails.swift apple/SaveThumbnails.swift tests/save_thumbnails.swift
 compile_run save-slots "$WORK/SaveSlot.swift" tests/save_slots.swift
+compile_run save-backup apple/SaveBackup.swift tests/save_backup.swift
 if [[ "$CHECK_METAL" == 1 ]]; then
   echo 'Native checks passed; no game resources or UI were used.'
 else

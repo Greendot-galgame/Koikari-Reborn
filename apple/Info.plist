@@ -12,6 +12,14 @@
   <key>CFBundleVersion</key><string>19</string>
   <key>UIFileSharingEnabled</key><true/>
   <key>LSSupportsOpeningDocumentsInPlace</key><true/>
+  <key>UTExportedTypeDeclarations</key><array><dict>
+    <key>UTTypeIdentifier</key><string>dev.greenhats.koikari-reborn.save</string>
+    <key>UTTypeDescription</key><string>Koikari Reborn 存档备份</string>
+    <key>UTTypeConformsTo</key><array><string>public.data</string><string>public.json</string></array>
+    <key>UTTypeTagSpecification</key><dict>
+      <key>public.filename-extension</key><array><string>koikari-save</string></array>
+    </dict>
+  </dict></array>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
   <key>MinimumOSVersion</key><string>16.0</string>

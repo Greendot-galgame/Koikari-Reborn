@@ -391,6 +391,9 @@ struct AudioFailurePolicy {
     for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(
       "KoikariReborn")
   private let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+  /// Saves directory shared with `connect`. Exposed so the save manager can
+  /// export/import every file underneath without reaching into Rust.
+  var savesDirectory: URL { support.appendingPathComponent("Saves") }
 
   nonisolated private static func preference(
     _ key: String, fallback: Double, range: ClosedRange<Double> = 0...1

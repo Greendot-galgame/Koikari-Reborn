@@ -113,6 +113,13 @@ cargo test --test animation gpu:: -- --ignored --test-threads=1
 
 停在 `[c]`、`[p]` 或 `[l]` 阅读时，内置持续横抖 `ppe` 和横摇 `yue` 现在分别按短版 `pp`（160 ms）和 `yu`（680 ms）收尾，从动作开始计时，不再持续到玩家点击。这取代了 build 12 对当前页保留这两种无限循环的预期；脚本计时等待中的循环和其他方向的动作不变。合成回归覆盖停页、读档时保留已播放时间，以及旧存档中的无限横抖在下一次剧情时钟更新后归位。macOS 上默认 Rust 回归 160 项通过、32 项显式跳过，格式与 Clippy 检查通过。本轮未用原作资源或真机复验。
 
+## 存档导出 / 导入 · build 19 增量
+
+- 存读档面板顶部新增「导出存档备份 / 导入存档备份」。导出把 `Saves/` 目录里实际存在的 `slot-1..24.json` 及 `progress-*.json` 打包为单一 `.koikari-save` JSON 清单（manifest 含 `format`/`app`/`createdAt`/`files`，条目为 `{name, data(base64)}`）；导入时校验 `format`/`app`/文件名/单文件 ≤4 MiB，逐条原子写回并刷新列表。同名槽位会被覆盖，不兼容资源的档仍会写盘，兼容标志照常显示。
+- 新增 `apple/SaveBackup.swift`（manifest 编解码 + `FileDocument` 导出包装 + `UTType`）及 `tests/save_backup.swift`：导出内容只含合法 `slot-`/`progress-` 文件、`slot-25`/`slot-0`/`progress-short`/空文件被排除、全无效条目导入报 `missingFiles`、错误 `format` 版本拒绝、目录往返一致；ISO8601 `createdAt` 与旧蛇形 `created_at` 键都可读。检查方式与既有原生断言相同：编译即执行，不依赖游戏资源或 Metal。
+- `Info.plist` 新增 `UTExportedTypeDeclarations`（`dev.greenhats.koikari-reborn.save`，扩展名 `.koikari-save`）；`project.pbxproj` 注册 `SaveBackup.swift` 并通过对象引用与 target 注册检查；`GameMenus.swift` 加 fileExporter/fileImporter、覆盖导入确认弹窗与逐文件结果提示；`KoikariApp.swift` 暴露 `savesDirectory` 供面板使用。
+- **未验证**：真实 `.koikari-save` 文件在 macOS/iOS Files 面板里的选择器交互、跨设备/重装导入、同名覆盖确认流程以及进度文件在另一指纹资源包下的兼容行为；以上均为合成数据与文件系统层断言，不等于端到端 UI 或真实资源验收。
+
 ## 可公开复现的检查
 
 不需要原作资源：
