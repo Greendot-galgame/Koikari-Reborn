@@ -151,11 +151,8 @@ impl Database {
             if let Some(sel_ids) = choice_events.get(&index) {
                 for &sel_id in sel_ids {
                     let sel = &self.selections[sel_id];
-                    for (choice_id, (label, destination)) in sel
-                        .text
-                        .iter()
-                        .zip(sel.destinations.iter())
-                        .enumerate()
+                    for (choice_id, (label, destination)) in
+                        sel.text.iter().zip(sel.destinations.iter()).enumerate()
                     {
                         let to = if destination.is_empty() {
                             None
@@ -216,7 +213,11 @@ impl Database {
                 edges,
             });
         }
-        FlowTree { routes, roots, nodes }
+        FlowTree {
+            routes,
+            roots,
+            nodes,
+        }
     }
 }
 fn string(v: Option<&Value>) -> Result<String> {
@@ -442,7 +443,10 @@ mod tests {
             .variables
             .insert("selection:0:0".into(), serde_json::Value::Bool(true));
         let tree = db.flow_tree(&progress);
-        assert_eq!(tree.routes, vec!["Common".to_string(), "heroine".to_string()]);
+        assert_eq!(
+            tree.routes,
+            vec!["Common".to_string(), "heroine".to_string()]
+        );
         assert_eq!(tree.roots.len(), 2);
         // a1: linear chapter, visited and unlocked, edge to a2.
         assert!(tree.nodes[0].visited && tree.nodes[0].unlocked);
@@ -456,7 +460,10 @@ mod tests {
         assert!(branch.walked && branch.unlocked);
         // a2 also carries a linear edge to h1 (its `next`), so it has both the
         // two labelled branches and one unlabelled linear edge.
-        assert!(tree.nodes[1].edges.iter().any(|e| e.label.is_none() && e.to == Some(2)));
+        assert!(tree.nodes[1]
+            .edges
+            .iter()
+            .any(|e| e.label.is_none() && e.to == Some(2)));
         // h1 is an unread route head: locked until its route ending is hit or
         // it is read via the branch from a2.
         assert!(matches!(tree.nodes[2].kind, FlowNodeKind::Ending));

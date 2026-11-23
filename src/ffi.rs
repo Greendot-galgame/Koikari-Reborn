@@ -67,7 +67,7 @@ impl SavePreview {
                 MTLRegion::new_2d(0, 0, u64::from(PREVIEW_WIDTH), u64::from(PREVIEW_HEIGHT)),
                 0,
             );
-            for pixel in rgba.chunks_exact_mut(4) {
+            for pixel in rgba.as_chunks_mut::<4>().0 {
                 pixel.swap(0, 2); // Metal BGRA -> PNG RGBA, no live-scene fallback.
             }
             let image = image::RgbaImage::from_raw(PREVIEW_WIDTH, PREVIEW_HEIGHT, rgba)
@@ -398,9 +398,7 @@ pub unsafe extern "C" fn kr_action(handle: *mut Host, action: *const c_char) -> 
                         index.parse().map_err(|_| "invalid jump event")?,
                     )
                 } else if let Some(pair) = spec.strip_prefix("choice:") {
-                    let (sel, ch) = pair
-                        .split_once(':')
-                        .ok_or("invalid jump choice")?;
+                    let (sel, ch) = pair.split_once(':').ok_or("invalid jump choice")?;
                     crate::events::FlowTarget::Choice {
                         selection: sel.parse().map_err(|_| "invalid jump selection")?,
                         choice: ch.parse().map_err(|_| "invalid jump branch")?,
@@ -735,8 +733,7 @@ pub unsafe extern "C" fn kr_replays(handle: *mut Host) -> *mut c_char {
 pub unsafe extern "C" fn kr_flow_tree(handle: *mut Host) -> *mut c_char {
     run(|| {
         Ok(cstring(
-            &serde_json::to_string(&host(handle)?.engine.flow_tree())
-                .map_err(|e| e.to_string())?,
+            &serde_json::to_string(&host(handle)?.engine.flow_tree()).map_err(|e| e.to_string())?,
         ))
     })
 }

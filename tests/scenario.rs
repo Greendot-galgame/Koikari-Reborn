@@ -161,14 +161,12 @@ fn story_tree_jumps_to_events_and_branches_with_real_state() {
         // story); branch entries stay locked until walked or their event read.
         assert!(engine.start_from(FlowTarget::Event(0)).is_ok());
         engine.start().unwrap(); // reset the fresh Event(0) run back to intro
-        assert!(
-            engine
-                .start_from(FlowTarget::Choice {
-                    selection: 0,
-                    choice
-                })
-                .is_err()
-        );
+        assert!(engine
+            .start_from(FlowTarget::Choice {
+                selection: 0,
+                choice
+            })
+            .is_err());
         // Play through the branch once so both the event and the branch unlock.
         engine.start().unwrap();
         engine.choose(choice).unwrap();
@@ -184,7 +182,7 @@ fn story_tree_jumps_to_events_and_branches_with_real_state() {
         engine
             .start_from(FlowTarget::Choice {
                 selection: 0,
-                choice
+                choice,
             })
             .unwrap();
         assert_eq!(

@@ -1603,13 +1603,7 @@ struct Content: View {
   private var title: Bool { game.snapshot?.title ?? true }
   var body: some View {
     VStack(spacing: 0) {
-      if !title {
-        readingToolbar
-          .opacity(game.interfaceHidden ? 0 : 1)
-          .disabled(game.interfaceHidden)
-          .allowsHitTesting(!game.interfaceHidden)
-          .accessibilityHidden(game.interfaceHidden)
-      }
+      if !title { topBar }
       GeometryReader { geometry in
         let width = min(geometry.size.width, geometry.size.height * 16 / 9)
         let height = width * 9 / 16
@@ -1622,24 +1616,7 @@ struct Content: View {
               if !title && !game.importing { game.next() }
             }
           if title {
-            GameTitleScreen(
-              game: game,
-              startNew: {
-                if game.hasSave { newGame = true } else { game.action("new") }
-              },
-              resume: { game.action("continue") },
-              openSaves: { openSaves(saving: false) },
-              openCollection: { openCollection(replay: $0) },
-              openResources: {
-                #if os(macOS)
-                  importing = true
-                #else
-                  game.reloadDocumentResources()
-                #endif
-              },
-              openSettings: { showSettings = true }
-            )
-            .disabled(game.importing || game.modalOpen)
+            titleOverlay
           } else if let state = game.snapshot {
             if let credits = state.scene.credits {
               CreditsView(credits: credits, images: game.creditImages)
@@ -2008,6 +1985,27 @@ struct Content: View {
     .zIndex(1)
   }
 
+  private var hiddenToolbar: some View {
+    HStack(spacing: 8) {
+      Spacer(minLength: 8)
+      Button {
+        game.next()
+      } label: {
+        Label("显示界面", systemImage: "eye").labelStyle(.iconOnly)
+      }
+      .buttonStyle(.bordered).controlSize(.large)
+      .accessibilityIdentifier("reveal-interface-toolbar")
+      .accessibilityLabel("显示界面")
+      .keyboardShortcut(.space, modifiers: [])
+      .help("恢复界面，不推进剧情；也可点击画面")
+    }
+    .padding(.horizontal, 12).padding(.vertical, 4)
+    .background(GameTheme.background)
+    .overlay(alignment: .bottom) { GameTheme.border.frame(height: 1) }
+    .disabled(game.importing || game.modalOpen || game.error != nil)
+    .zIndex(1)
+  }
+
   private func toolbarContent(showBrand: Bool) -> some View {
     HStack(spacing: 8) {
       if showBrand {
@@ -2124,6 +2122,16 @@ struct Content: View {
     }
   }
 
+  /// The hidden-state branch alone was enough to push `body` past the
+  /// type-check budget again, so the toolbar swap lives here.
+  @ViewBuilder private var topBar: some View {
+    if game.interfaceHidden {
+      hiddenToolbar
+    } else {
+      readingToolbar
+    }
+  }
+
   private var hasPresentedModal: Bool {
     importing || showHistory || showDiagnostics || returnToTitle || showSaves || showSettings
       || newGame || showCollection || showStoryTree || game.error != nil
@@ -2200,6 +2208,30 @@ struct Content: View {
   }
   private func document(_ title: String, text: String, close: @escaping () -> Void) -> some View {
     GameDocumentSheet(title: title, text: text, close: close)
+  }
+
+  /// Split out of 'body': the full GameTitleScreen call plus the surrounding
+  /// canvas expression grew past the compiler's type-check budget.
+  @ViewBuilder private var titleOverlay: some View {
+    GameTitleScreen(
+      game: game,
+      startNew: {
+        if game.hasSave { newGame = true } else { game.action("new") }
+      },
+      resume: { game.action("continue") },
+      openSaves: { openSaves(saving: false) },
+      openCollection: { openCollection(replay: $0) },
+      openStoryTree: { openStoryTree() },
+      openResources: {
+        #if os(macOS)
+          importing = true
+        #else
+          game.reloadDocumentResources()
+        #endif
+      },
+      openSettings: { showSettings = true }
+    )
+    .disabled(game.importing || game.modalOpen)
   }
 }
 
