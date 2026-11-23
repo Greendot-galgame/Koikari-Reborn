@@ -876,12 +876,12 @@ struct StoryTreeSheet: View {
   }
 
   /// Card metrics in points; the canvas size derives from column/depth counts.
-  private let nodeWidth: CGFloat = 196
-  private let nodeHeight: CGFloat = 56
-  private let columnWidth: CGFloat = 240
-  private let rowHeight: CGFloat = 108
-  private let headerHeight: CGFloat = 48
-  private let canvasInset: CGFloat = 28
+  private let nodeWidth: CGFloat = 170
+  private let nodeHeight: CGFloat = 44
+  private let columnWidth: CGFloat = 210
+  private let rowHeight: CGFloat = 82
+  private let headerHeight: CGFloat = 40
+  private let canvasInset: CGFloat = 24
 
   private struct TreePlan {
     struct Link: Identifiable {
@@ -1083,40 +1083,33 @@ struct StoryTreeSheet: View {
     Button {
       if node.unlocked { ask(.event(node.event)) }
     } label: {
-      VStack(alignment: .leading, spacing: 4) {
-        HStack(spacing: 6) {
-          Image(systemName: symbol(node))
-            .font(.callout)
-            .foregroundStyle(node.unlocked ? GameTheme.accent : .secondary)
-            .accessibilityHidden(true)
-          Text(node.title.isEmpty ? "事件 \(node.event)" : node.title)
-            .font(.callout.weight(.medium))
-            .foregroundStyle(node.unlocked ? .primary : .secondary)
-            .lineLimit(2)
-            .multilineTextAlignment(.leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        HStack {
-          Text(kindLabel(node))
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-          Spacer(minLength: 4)
-          if node.visited {
-            Label("已读", systemImage: "checkmark.circle.fill")
-              .font(.caption2)
-              .foregroundStyle(GameTheme.success)
-              .labelStyle(.titleAndIcon)
-          }
+      HStack(spacing: 7) {
+        Image(systemName: symbol(node))
+          .font(.subheadline)
+          .foregroundStyle(node.unlocked ? GameTheme.accent : .secondary)
+          .accessibilityHidden(true)
+        Text(node.title.isEmpty ? "事件 \(node.event)" : node.title)
+          .font(.subheadline.weight(.medium))
+          .foregroundStyle(node.unlocked ? .primary : .secondary)
+          .lineLimit(2)
+          .multilineTextAlignment(.leading)
+          .frame(maxWidth: .infinity, alignment: .leading)
+        if node.visited {
+          Image(systemName: "checkmark.circle.fill")
+            .font(.caption)
+            .foregroundStyle(GameTheme.success)
+            .accessibilityLabel("已读")
         }
       }
-      .padding(10)
+      .padding(.horizontal, 9)
+      .padding(.vertical, 6)
       .frame(width: nodeWidth, height: nodeHeight)
       .background(
         node.unlocked ? GameTheme.surface : GameTheme.surface.opacity(0.45),
-        in: RoundedRectangle(cornerRadius: 12)
+        in: RoundedRectangle(cornerRadius: 10)
       )
       .overlay {
-        RoundedRectangle(cornerRadius: 12)
+        RoundedRectangle(cornerRadius: 10)
           .strokeBorder(
             node.visited ? GameTheme.accent.opacity(0.55) : GameTheme.border,
             lineWidth: 1
@@ -1193,14 +1186,6 @@ struct StoryTreeSheet: View {
     case "choice": return "arrow.triangle.branch"
     case "ending": return "flag.checkered"
     default: return "book.closed"
-    }
-  }
-
-  private func kindLabel(_ node: FlowNode) -> String {
-    switch node.kind {
-    case "choice": return "分支点"
-    case "ending": return "结局"
-    default: return "章节"
     }
   }
 
