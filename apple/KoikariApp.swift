@@ -1950,6 +1950,9 @@ struct Content: View {
             && state.scene.video == nil && !state.finished && !game.interfaceHidden
             && !(state.scene.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
               && state.scene.speaker.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+          let panelY: CGFloat = min(
+            geometry.size.height - panelHeight / 2 - 8,
+            max(panelHeight / 2 + 8, top + height - panelHeight / 2 - height * 0.035))
           if showReadingBox {
             GameReadingPanel(
               speaker: state.scene.speaker, text: state.scene.text, page: state.pages,
@@ -1986,12 +1989,7 @@ struct Content: View {
               .accessibilityIdentifier("advance").help("下一句（空格 / 右方向键）")
             }
             .frame(width: panelWidth, height: panelHeight)
-            .position(
-              x: geometry.size.width / 2,
-              y: min(
-                geometry.size.height - panelHeight / 2 - 8,
-                max(panelHeight / 2 + 8, top + height - panelHeight / 2 - height * 0.035))
-            )
+            .position(x: geometry.size.width / 2, y: panelY)
             .disabled(game.modalOpen || game.importing || game.error != nil)
           }
           if game.interfaceHidden {
