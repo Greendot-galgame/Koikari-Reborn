@@ -4,7 +4,13 @@ private struct LibrarySurface: ViewModifier {
   var width: CGFloat = 680
   func body(content: Self.Content) -> some View {
     content
-      .frame(minWidth: 300, idealWidth: width, minHeight: 280, idealHeight: 620)
+      #if os(macOS)
+        // macOS sheets size to the content's fitting size; a flexible frame
+        // collapses to a narrow panel, so pin the intended library size.
+        .frame(width: width, height: 620)
+      #else
+        .frame(minWidth: 300, idealWidth: width, minHeight: 280, idealHeight: 620)
+      #endif
       .background(GameTheme.background).foregroundStyle(GameTheme.text)
       .tint(GameTheme.accent).preferredColorScheme(.light)
   }
@@ -604,7 +610,8 @@ struct SaveManager: View {
   }
 
   private func page(width: CGFloat) -> some View {
-    VStack(spacing: 0) {
+    let wide = width >= 600 && !typeSize.isAccessibilitySize
+    return VStack(spacing: 0) {
       GameSheetHeader(title: saving ? "保存进度" : "读取存档", closeIdentifier: "close-saves") { dismiss() }
       HStack(spacing: 10) {
         Button {
@@ -646,18 +653,14 @@ struct SaveManager: View {
             if saving || !manual.isEmpty {
               VStack(alignment: .leading, spacing: 10) {
                 Text("手动存档").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                if pageCount > 1 {
-                  Picker("路线", selection: $selectedPage) {
-                    ForEach(0..<pageCount, id: \.self) { index in
-                      Text(game.routeTitle(index)).tag(index)
-                    }
-                  }
-                  .pickerStyle(.segmented)
-                  .accessibilityIdentifier("save-page-picker")
-                }
+                if pageCount > 1 { routeStrip }
                 if pagedManual.isEmpty {
                   Text("这一页还没有存档。").font(.callout).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center).padding(.vertical, 24)
+                } else if wide {
+                  VStack(spacing: 12) {
+                    ForEach(pagedManual) { slot in card(slot, width: width) }
+                  }
                 } else {
                   LazyVGrid(
                     columns: [GridItem(.adaptive(minimum: 260), spacing: 12, alignment: .top)],
@@ -674,11 +677,45 @@ struct SaveManager: View {
     }
   }
 
+  /// Route tabs scroll sideways instead of squeezing every route into one
+  /// segmented control, which clipped labels once a game has many routes.
+  private var routeStrip: some View {
+    ScrollView(.horizontal, showsIndicators: false) {
+      HStack(spacing: 8) {
+        ForEach(0..<pageCount, id: \.self) { index in
+          let selected = index == selectedPage
+          Button {
+            selectedPage = index
+          } label: {
+            Text(game.routeTitle(index))
+              .font(.callout.weight(selected ? .semibold : .regular))
+              .lineLimit(1)
+              .padding(.horizontal, 14)
+              .padding(.vertical, 8)
+              .background(selected ? GameTheme.accent : GameTheme.surface, in: Capsule())
+              .overlay {
+                Capsule().strokeBorder(
+                  selected ? Color.clear : GameTheme.border, lineWidth: 1
+                )
+                .allowsHitTesting(false)
+              }
+              .foregroundStyle(selected ? Color.white : GameTheme.text)
+          }
+          .buttonStyle(.plain)
+          .accessibilityIdentifier("save-page-\(index)")
+          .accessibilityAddTraits(selected ? .isSelected : [])
+        }
+      }
+      .padding(.vertical, 2)
+    }
+    .accessibilityIdentifier("save-page-picker")
+  }
+
   private func card(_ slot: SaveSlot, width: CGFloat) -> some View {
     GroupBox {
-      if slot.slot == 9 && width >= 360 && !typeSize.isAccessibilitySize {
-        HStack(alignment: .top, spacing: width >= 600 ? 16 : 12) {
-          SaveSlotThumbnail(game: game, slot: slot).frame(width: width >= 600 ? 192 : 104)
+      if width >= 600 && !typeSize.isAccessibilitySize {
+        HStack(alignment: .top, spacing: 16) {
+          SaveSlotThumbnail(game: game, slot: slot).frame(width: 224)
           information(slot).frame(maxWidth: .infinity)
         }.padding(4)
       } else {
@@ -920,8 +957,9 @@ struct StoryTreeSheet: View {
             Button {
               toggleChoice(node.event)
             } label: {
-              Image(systemName: openChoices.contains(node.event)
-                    ? "chevron.up" : "chevron.down")
+              Image(
+                systemName: openChoices.contains(node.event)
+                  ? "chevron.up" : "chevron.down")
             }
             .buttonStyle(.borderless).accessibilityLabel("展开分支")
           }
@@ -977,8 +1015,7 @@ struct StoryTreeSheet: View {
   }
 
   private func toggleChoice(_ event: Int) {
-    if openChoices.contains(event) { openChoices.remove(event) }
-    else { openChoices.insert(event) }
+    if openChoices.contains(event) { openChoices.remove(event) } else { openChoices.insert(event) }
   }
 
   private func ask(_ jump: PendingJump) {
