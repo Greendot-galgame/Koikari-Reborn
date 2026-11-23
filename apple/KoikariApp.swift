@@ -684,6 +684,10 @@ struct AudioFailurePolicy {
   }
   @discardableResult func autoSave() -> Bool {
     guard let handle, let state = snapshot, !state.title, state.blocked == nil else { return false }
+    // A scene replay runs on a borrowed state; the last real autosave (written
+    // before the replay started) already preserves the player's progress, so
+    // replaying must never overwrite it.
+    if state.flow?.replay == true { return true }
     if "save:9".withCString({ kr_action(handle, $0) }) == 0 {
       saveWarning = "自动进度保存失败：\(rustError())"
       return false

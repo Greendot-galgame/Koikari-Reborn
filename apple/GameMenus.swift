@@ -504,7 +504,10 @@ struct SaveManager: View {
   @State private var selectedPage = 0
   private var automatic: [SaveSlot] { game.slots.filter { $0.slot == 9 } }
   private var manual: [SaveSlot] { game.slots.filter { $0.slot != 9 }.sorted { $0.slot < $1.slot } }
-  private var canSave: Bool { !(game.snapshot?.title ?? true) && game.snapshot?.blocked == nil }
+  private var canSave: Bool {
+    !(game.snapshot?.title ?? true) && game.snapshot?.blocked == nil
+      && game.snapshot?.flow?.replay != true
+  }
   /// One page per route: index 0 is always the common route. Beyond the
   /// declared routes, any slot that recorded an out-of-range route still gets a
   /// page so its save stays reachable instead of disappearing.

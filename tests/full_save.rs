@@ -370,6 +370,78 @@ fn ffi_new_and_title_keep_real_global_unlocks_without_unlocking_other_content() 
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 #[test]
+fn ffi_rejects_every_save_slot_during_scene_replay_but_still_loads() {
+    use koikari_reborn::ffi::*;
+    use std::ffi::{CStr, CString};
+    let assets = common::game("First[c]\n@SC_EndProcess");
+    std::fs::write(
+        assets.path().join("patch.xp3"),
+        common::archive(
+            &[
+                (
+                    "DB_EV.ks",
+                    b"lf.EV_EventListInfo=[['intro',0,'End',-1,[-1,-1],'First'],['late',1,-1,'End',[-1,-1],'Last']];",
+                ),
+                ("DB_EX.ks", b"lf.EX_SCENEInfo=[[-1,-1,'late']];"),
+                (
+                    "late.ks",
+                    b"@SC_SceneStartProcess\nLater[c]\n@SC_SceneEnd\n@SC_EndProcess",
+                ),
+            ],
+            true,
+            true,
+            0,
+            false,
+        ),
+    )
+    .unwrap();
+    let saves = tempfile::tempdir().unwrap();
+    let resource = CString::new(assets.path().to_str().unwrap()).unwrap();
+    let storage = CString::new(saves.path().to_str().unwrap()).unwrap();
+    let action =
+        |host, command: &str| unsafe { kr_action(host, CString::new(command).unwrap().as_ptr()) };
+    unsafe {
+        let host = kr_open(resource.as_ptr(), storage.as_ptr());
+        assert!(!host.is_null());
+        // Play into the scene so the replay unlocks naturally.
+        for command in ["new", "advance"] {
+            assert_eq!(action(host, command), 1);
+        }
+        // A real autosave anchors the pre-replay progress.
+        assert_eq!(action(host, "save:9"), 1);
+        let anchored = std::fs::read(saves.path().join("slot-9.json")).unwrap();
+        assert_eq!(action(host, "advance"), 1);
+        assert_eq!(action(host, "replay:scene:late"), 1);
+        let snapshot = kr_snapshot(host);
+        assert!(!snapshot.is_null());
+        let replay: serde_json::Value =
+            serde_json::from_str(CStr::from_ptr(snapshot).to_str().unwrap()).unwrap();
+        kr_string_free(snapshot);
+        assert_eq!(replay["flow"]["replay"], serde_json::json!(true));
+        // Neither the autosave slot nor manual slots may capture replay state.
+        for command in ["save:9", "save:1", "save:24"] {
+            assert_eq!(action(host, command), 0);
+        }
+        assert_eq!(
+            std::fs::read(saves.path().join("slot-9.json")).unwrap(),
+            anchored
+        );
+        assert!(!saves.path().join("slot-1.json").exists());
+        // Loading still replaces the whole state, including the replay shell.
+        assert_eq!(action(host, "load:9"), 1);
+        let snapshot = kr_snapshot(host);
+        assert!(!snapshot.is_null());
+        let restored: serde_json::Value =
+            serde_json::from_str(CStr::from_ptr(snapshot).to_str().unwrap()).unwrap();
+        kr_string_free(snapshot);
+        assert_eq!(restored["flow"]["replay"], serde_json::json!(false));
+        assert_eq!(action(host, "save:1"), 1);
+        kr_close(host);
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[test]
 fn ffi_load_never_accepts_silent_loss_of_full_state_or_mutates_live_game_on_failure() {
     use koikari_reborn::{ffi::*, story::Engine, xp3::Store};
     use std::{

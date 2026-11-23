@@ -415,6 +415,9 @@ pub unsafe extern "C" fn kr_action(handle: *mut Host, action: *const c_char) -> 
                 if h.engine.state.title {
                     return Err("cannot save the title screen".into());
                 }
+                if h.engine.state.flow.replay {
+                    return Err("cannot save during replay".into());
+                }
                 if h.engine.state.blocked.is_some() {
                     return Err("cannot save a blocked script".into());
                 }
