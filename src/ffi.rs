@@ -67,7 +67,7 @@ impl SavePreview {
                 MTLRegion::new_2d(0, 0, u64::from(PREVIEW_WIDTH), u64::from(PREVIEW_HEIGHT)),
                 0,
             );
-            for pixel in rgba.chunks_exact_mut(4) {
+            for pixel in rgba.as_chunks_mut::<4>().0 {
                 pixel.swap(0, 2); // Metal BGRA -> PNG RGBA, no live-scene fallback.
             }
             let image = image::RgbaImage::from_raw(PREVIEW_WIDTH, PREVIEW_HEIGHT, rgba)
