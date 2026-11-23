@@ -1603,13 +1603,7 @@ struct Content: View {
   private var title: Bool { game.snapshot?.title ?? true }
   var body: some View {
     VStack(spacing: 0) {
-      if !title {
-        if game.interfaceHidden {
-          hiddenToolbar
-        } else {
-          readingToolbar
-        }
-      }
+      if !title { topBar }
       GeometryReader { geometry in
         let width = min(geometry.size.width, geometry.size.height * 16 / 9)
         let height = width * 9 / 16
@@ -2125,6 +2119,16 @@ struct Content: View {
         .fixedSize()
         .accessibilityIdentifier("compact-game-menu").accessibilityLabel("游戏菜单")
       #endif
+    }
+  }
+
+  /// The hidden-state branch alone was enough to push `body` past the
+  /// type-check budget again, so the toolbar swap lives here.
+  @ViewBuilder private var topBar: some View {
+    if game.interfaceHidden {
+      hiddenToolbar
+    } else {
+      readingToolbar
     }
   }
 
