@@ -1622,25 +1622,7 @@ struct Content: View {
               if !title && !game.importing { game.next() }
             }
           if title {
-            GameTitleScreen(
-              game: game,
-              startNew: {
-                if game.hasSave { newGame = true } else { game.action("new") }
-              },
-              resume: { game.action("continue") },
-              openSaves: { openSaves(saving: false) },
-              openCollection: { openCollection(replay: $0) },
-              openStoryTree: { openStoryTree() },
-              openResources: {
-                #if os(macOS)
-                  importing = true
-                #else
-                  game.reloadDocumentResources()
-                #endif
-              },
-              openSettings: { showSettings = true }
-            )
-            .disabled(game.importing || game.modalOpen)
+            titleOverlay
           } else if let state = game.snapshot {
             if let credits = state.scene.credits {
               CreditsView(credits: credits, images: game.creditImages)
@@ -2201,6 +2183,30 @@ struct Content: View {
   }
   private func document(_ title: String, text: String, close: @escaping () -> Void) -> some View {
     GameDocumentSheet(title: title, text: text, close: close)
+  }
+
+  /// Split out of 'body': the full GameTitleScreen call plus the surrounding
+  /// canvas expression grew past the compiler's type-check budget.
+  @ViewBuilder private var titleOverlay: some View {
+    GameTitleScreen(
+      game: game,
+      startNew: {
+        if game.hasSave { newGame = true } else { game.action("new") }
+      },
+      resume: { game.action("continue") },
+      openSaves: { openSaves(saving: false) },
+      openCollection: { openCollection(replay: $0) },
+      openStoryTree: { openStoryTree() },
+      openResources: {
+        #if os(macOS)
+          importing = true
+        #else
+          game.reloadDocumentResources()
+        #endif
+      },
+      openSettings: { showSettings = true }
+    )
+    .disabled(game.importing || game.modalOpen)
   }
 }
 
