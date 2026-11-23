@@ -1630,6 +1630,7 @@ struct Content: View {
               resume: { game.action("continue") },
               openSaves: { openSaves(saving: false) },
               openCollection: { openCollection(replay: $0) },
+              openStoryTree: { openStoryTree() },
               openResources: {
                 #if os(macOS)
                   importing = true

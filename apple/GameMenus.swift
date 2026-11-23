@@ -852,18 +852,17 @@ private struct SaveSlotThumbnail: View {
   }
 }
 
-/// Chapter/branch picker backed by the engine's flow-tree projection. Nodes are
-/// events grouped by route; choice nodes expand to show their branch edges.
+/// Chapter/branch map backed by the engine's flow-tree projection. Nodes are
+/// laid out as a real branching tree on a canvas that scrolls both axes and
+/// pinch-zooms; tapping an unlocked node or a walked branch jumps to it.
 /// Jumping autosaves (slot 9) then restarts a clean non-replay run of the target.
 struct StoryTreeSheet: View {
   @ObservedObject var game: Game
   @Environment(\.dismiss) private var dismiss
   @State private var pending: PendingJump?
   @State private var confirm = false
-  /// Routes whose section body is expanded; the common route starts open.
-  @State private var expanded: Set<Int> = [0]
-  /// Choice nodes whose branch rows are shown.
-  @State private var openChoices: Set<Int> = []
+  @State private var zoom: CGFloat = 1
+  @GestureState private var pinch: CGFloat = 1
 
   private enum PendingJump {
     case event(Int)
@@ -876,16 +875,82 @@ struct StoryTreeSheet: View {
     }
   }
 
+  /// Card metrics in points; the canvas size derives from column/depth counts.
+  private let nodeWidth: CGFloat = 196
+  private let nodeHeight: CGFloat = 56
+  private let columnWidth: CGFloat = 240
+  private let rowHeight: CGFloat = 108
+  private let headerHeight: CGFloat = 48
+  private let canvasInset: CGFloat = 28
+
+  private struct TreePlan {
+    struct Link: Identifiable {
+      var from: CGPoint
+      var to: CGPoint
+      var edge: FlowEdge
+      var id: String { edge.id + "@" + String(Int(from.y)) }
+    }
+    struct Header: Identifiable {
+      var name: String
+      var at: CGPoint
+      var id: String { name }
+    }
+    var positions: [Int: CGPoint] = [:]
+    var links: [Link] = []
+    var headers: [Header] = []
+    var size: CGSize = .zero
+  }
+
   private var tree: FlowTree? { game.flowTree }
 
   var body: some View {
     VStack(spacing: 0) {
       GameSheetHeader(title: "剧情树", closeIdentifier: "close-story-tree") { dismiss() }
       if let tree, !tree.nodes.isEmpty {
-        List {
-          ForEach(Array(tree.routes.indices), id: \.self) { route in
-            routeSection(tree: tree, route: route)
+        let plan = layout(tree)
+        let scale = zoom * pinch
+        ZStack(alignment: .bottomTrailing) {
+          ScrollView([.horizontal, .vertical], showsIndicators: true) {
+            ZStack {
+              edgeCanvas(plan)
+              ForEach(plan.headers) { header in
+                Text(header.name)
+                  .font(.callout.weight(.semibold))
+                  .foregroundStyle(GameTheme.accent)
+                  .padding(.horizontal, 12).padding(.vertical, 5)
+                  .background(GameTheme.surface, in: Capsule())
+                  .overlay {
+                    Capsule().strokeBorder(GameTheme.accent.opacity(0.4))
+                      .allowsHitTesting(false)
+                  }
+                  .position(header.at)
+              }
+              ForEach(tree.nodes) { node in
+                if let point = plan.positions[node.event] {
+                  nodeCard(node).position(point)
+                }
+              }
+              ForEach(plan.links) { link in
+                if let label = link.edge.label {
+                  branchChip(link, label: label)
+                    .position(chipPoint(link))
+                }
+              }
+            }
+            .frame(width: plan.size.width, height: plan.size.height)
+            .scaleEffect(scale, anchor: .topLeading)
+            .frame(
+              width: plan.size.width * scale,
+              height: plan.size.height * scale,
+              alignment: .topLeading
+            )
+            .gesture(
+              MagnificationGesture()
+                .updating($pinch) { value, state, _ in state = value }
+                .onEnded { zoom = min(2.5, max(0.4, zoom * $0)) })
           }
+          .background(GameTheme.background.opacity(0.4))
+          zoomBar.padding(12)
         }
       } else {
         LibraryEmptyState(
@@ -893,7 +958,7 @@ struct StoryTreeSheet: View {
           detail: "开始游玩后，章节与分支会按进度解锁显示在这里。")
       }
     }
-    .modifier(LibrarySurface(width: 640))
+    .modifier(LibrarySurface(width: 780))
     .confirmationDialog(
       "跳转到\(pending?.title ?? "")？当前自动进度会更新，手动存档保留。",
       isPresented: $confirm, titleVisibility: .visible
@@ -911,99 +976,216 @@ struct StoryTreeSheet: View {
     }
   }
 
-  @ViewBuilder private func routeSection(tree: FlowTree, route: Int) -> some View {
-    let nodes = tree.nodes.filter { $0.route == route }
-    DisclosureGroup(isExpanded: binding(for: route)) {
-      ForEach(nodes) { node in
-        nodeRow(tree: tree, node: node)
+  /// Depth-first leaf ordering: each leaf takes the next column, parents sit
+  /// centered over their children. Unreachable nodes become detached columns
+  /// rather than silently disappearing.
+  private func layout(_ tree: FlowTree) -> TreePlan {
+    var plan = TreePlan()
+    let byEvent = Dictionary(
+      tree.nodes.map { ($0.event, $0) }, uniquingKeysWith: { first, _ in first })
+    var depthOf: [Int: Int] = [:]
+    var slotOf: [Int: Int] = [:]
+    var nextSlot = 0
+    var maxDepth = 0
+
+    func children(of event: Int) -> [Int] {
+      byEvent[event]?.edges.compactMap { $0.to }.filter { byEvent[$0] != nil } ?? []
+    }
+
+    func assign(_ root: Int) {
+      var stack: [(event: Int, depth: Int, resolved: Bool)] = [(root, 0, false)]
+      while let (event, depth, resolved) = stack.popLast() {
+        if resolved {
+          let kids = children(of: event).compactMap { slotOf[$0] }
+          let slot = kids.isEmpty ? nextSlot : (kids.first! + kids.last!) / 2
+          if kids.isEmpty { nextSlot += 1 }
+          slotOf[event] = slot
+          plan.positions[event] = CGPoint(
+            x: canvasInset + CGFloat(slot) * columnWidth + nodeWidth / 2,
+            y: headerHeight + CGFloat(depth) * rowHeight + nodeHeight / 2)
+          continue
+        }
+        guard depthOf[event] == nil else { continue }
+        depthOf[event] = depth
+        maxDepth = max(maxDepth, depth)
+        stack.append((event, depth, true))
+        for child in children(of: event) where depthOf[child] == nil {
+          stack.append((child, depth + 1, false))
+        }
       }
-    } label: {
-      HStack {
-        Text(route == 0 ? "共通线" : tree.routes[route])
-          .font(.subheadline.weight(.semibold))
-        Spacer(minLength: 8)
-        let done = nodes.filter { $0.unlocked }.count
-        Text("\(done)/\(nodes.count)").font(.caption.monospacedDigit())
-          .foregroundStyle(.secondary)
+    }
+
+    let roots = tree.roots.isEmpty ? tree.nodes.map { $0.event } : tree.roots
+    for root in roots {
+      let firstColumn = nextSlot
+      assign(root)
+      if let point = plan.positions[root], let node = byEvent[root] {
+        let name =
+          node.route == 0
+          ? "共通线"
+          : (tree.routes.indices.contains(node.route)
+            ? tree.routes[node.route] : "路线 \(node.route)")
+        plan.headers.append(
+          TreePlan.Header(
+            name: name,
+            at: CGPoint(x: canvasInset + CGFloat(firstColumn) * columnWidth + 60, y: 20)))
+        _ = point
+      }
+    }
+    for node in tree.nodes where plan.positions[node.event] == nil {
+      assign(node.event)
+    }
+
+    for node in tree.nodes {
+      guard let from = plan.positions[node.event] else { continue }
+      for edge in node.edges {
+        guard let target = edge.to, let to = plan.positions[target] else { continue }
+        plan.links.append(
+          TreePlan.Link(
+            from: CGPoint(x: from.x, y: from.y + nodeHeight / 2),
+            to: CGPoint(x: to.x, y: to.y - nodeHeight / 2),
+            edge: edge))
+      }
+    }
+    plan.size = CGSize(
+      width: canvasInset * 2 + CGFloat(max(nextSlot, 1)) * columnWidth,
+      height: headerHeight + CGFloat(maxDepth + 1) * rowHeight + canvasInset)
+    return plan
+  }
+
+  /// Cubic control points share the vertical midpoint, so t = 0.5 lands on
+  /// ((from.x + to.x) / 2, midY): that is where the label chip sits.
+  private func chipPoint(_ link: TreePlan.Link) -> CGPoint {
+    CGPoint(x: (link.from.x + link.to.x) / 2, y: (link.from.y + link.to.y) / 2)
+  }
+
+  private func edgeCanvas(_ plan: TreePlan) -> some View {
+    Canvas { context, _ in
+      for link in plan.links {
+        var path = Path()
+        path.move(to: link.from)
+        let midY = (link.from.y + link.to.y) / 2
+        path.addCurve(
+          to: link.to,
+          control1: CGPoint(x: link.from.x, y: midY),
+          control2: CGPoint(x: link.to.x, y: midY))
+        context.stroke(
+          path,
+          with: .color(link.edge.walked ? GameTheme.accent : GameTheme.border),
+          style: StrokeStyle(
+            lineWidth: link.edge.walked ? 2.5 : 1.5,
+            dash: link.edge.walked ? [] : [5, 4]))
       }
     }
   }
 
-  private func binding(for route: Int) -> Binding<Bool> {
-    Binding(
-      get: { expanded.contains(route) },
-      set: { if $0 { expanded.insert(route) } else { expanded.remove(route) } })
-  }
-
-  @ViewBuilder private func nodeRow(tree: FlowTree, node: FlowNode) -> some View {
-    VStack(alignment: .leading, spacing: 0) {
-      Button {
-        if node.unlocked { ask(.event(node.event)) }
-      } label: {
-        HStack(spacing: 10) {
-          Image(systemName: symbol(node))
-            .foregroundStyle(node.unlocked ? GameTheme.accent : .secondary)
-            .frame(width: 20).accessibilityHidden(true)
-          Text(node.title.isEmpty ? "事件 \(node.event)" : node.title)
-            .foregroundStyle(node.unlocked ? .primary : .secondary)
-            .lineLimit(1)
-          Spacer(minLength: 8)
-          if node.visited {
-            Image(systemName: "checkmark.circle.fill")
-              .foregroundStyle(GameTheme.success).font(.caption)
-              .accessibilityLabel("已读")
-          }
-          if node.kind == "choice" {
-            Button {
-              toggleChoice(node.event)
-            } label: {
-              Image(
-                systemName: openChoices.contains(node.event)
-                  ? "chevron.up" : "chevron.down")
-            }
-            .buttonStyle(.borderless).accessibilityLabel("展开分支")
-          }
-        }
-        .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
-        .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .disabled(!node.unlocked)
-      .accessibilityIdentifier("tree-node-\(node.event)")
-      if openChoices.contains(node.event) {
-        ForEach(node.edges.filter { $0.label != nil }) { edge in
-          branchRow(node: node, edge: edge)
-        }
-      }
-    }
-  }
-
-  @ViewBuilder private func branchRow(node: FlowNode, edge: FlowEdge) -> some View {
+  private func nodeCard(_ node: FlowNode) -> some View {
     Button {
-      if edge.jumpable, let sel = edge.selection, let ch = edge.choice {
-        ask(.choice(selection: sel, choice: ch))
-      }
+      if node.unlocked { ask(.event(node.event)) }
     } label: {
-      HStack(spacing: 8) {
-        Image(systemName: edge.walked ? "arrow.triangle.branch" : "circle.dashed")
-          .font(.caption2)
-          .foregroundStyle(edge.walked ? GameTheme.accent : .secondary)
-          .frame(width: 16).accessibilityHidden(true)
-        Text(edge.label ?? "")
-          .font(.callout)
-          .foregroundStyle(edge.walked ? .primary : .secondary)
-        Spacer(minLength: 8)
-        if edge.walked {
-          Text("已选").font(.caption2).foregroundStyle(GameTheme.success)
+      VStack(alignment: .leading, spacing: 4) {
+        HStack(spacing: 6) {
+          Image(systemName: symbol(node))
+            .font(.callout)
+            .foregroundStyle(node.unlocked ? GameTheme.accent : .secondary)
+            .accessibilityHidden(true)
+          Text(node.title.isEmpty ? "事件 \(node.event)" : node.title)
+            .font(.callout.weight(.medium))
+            .foregroundStyle(node.unlocked ? .primary : .secondary)
+            .lineLimit(2)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        HStack {
+          Text(kindLabel(node))
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+          Spacer(minLength: 4)
+          if node.visited {
+            Label("已读", systemImage: "checkmark.circle.fill")
+              .font(.caption2)
+              .foregroundStyle(GameTheme.success)
+              .labelStyle(.titleAndIcon)
+          }
         }
       }
-      .padding(.leading, 30)
-      .frame(maxWidth: .infinity, minHeight: 26, alignment: .leading)
-      .contentShape(Rectangle())
+      .padding(10)
+      .frame(width: nodeWidth, height: nodeHeight)
+      .background(
+        node.unlocked ? GameTheme.surface : GameTheme.surface.opacity(0.45),
+        in: RoundedRectangle(cornerRadius: 12)
+      )
+      .overlay {
+        RoundedRectangle(cornerRadius: 12)
+          .strokeBorder(
+            node.visited ? GameTheme.accent.opacity(0.55) : GameTheme.border,
+            lineWidth: 1
+          )
+          .allowsHitTesting(false)
+      }
+    }
+    .buttonStyle(.plain)
+    .disabled(!node.unlocked)
+    .accessibilityIdentifier("tree-node-\(node.event)")
+  }
+
+  private func branchChip(_ link: TreePlan.Link, label: String) -> some View {
+    let edge = link.edge
+    return Button {
+      if edge.jumpable, let selection = edge.selection, let choice = edge.choice {
+        ask(.choice(selection: selection, choice: choice))
+      }
+    } label: {
+      Text(label)
+        .font(.caption.weight(.medium))
+        .lineLimit(1)
+        .padding(.horizontal, 10).padding(.vertical, 4)
+        .background(
+          edge.walked ? GameTheme.accent : GameTheme.surface, in: Capsule()
+        )
+        .overlay {
+          Capsule()
+            .strokeBorder(edge.walked ? Color.clear : GameTheme.border, lineWidth: 1)
+            .allowsHitTesting(false)
+        }
+        .foregroundStyle(edge.walked ? .white : .secondary)
     }
     .buttonStyle(.plain)
     .disabled(!edge.jumpable)
-    .accessibilityIdentifier("tree-branch-\(edge.selection ?? -1)-\(edge.choice ?? -1)")
+    .accessibilityIdentifier(
+      "tree-branch-\(edge.selection ?? -1)-\(edge.choice ?? -1)")
+  }
+
+  private var zoomBar: some View {
+    HStack(spacing: 0) {
+      Button {
+        zoom = max(0.4, zoom - 0.2)
+      } label: {
+        Image(systemName: "minus").frame(width: 28, height: 28)
+      }
+      Text("\(Int(round(zoom * pinch * 100)))%")
+        .font(.caption.monospacedDigit())
+        .frame(minWidth: 42)
+      Button {
+        zoom = min(2.5, zoom + 0.2)
+      } label: {
+        Image(systemName: "plus").frame(width: 28, height: 28)
+      }
+      Button {
+        zoom = 1
+      } label: {
+        Text("1x").font(.caption.weight(.semibold)).frame(width: 30, height: 28)
+      }
+    }
+    .buttonStyle(.plain)
+    .foregroundStyle(GameTheme.text)
+    .padding(.horizontal, 6).padding(.vertical, 3)
+    .background(.regularMaterial, in: Capsule())
+    .overlay {
+      Capsule().strokeBorder(GameTheme.border, lineWidth: 1)
+        .allowsHitTesting(false)
+    }
+    .accessibilityIdentifier("story-tree-zoom")
   }
 
   private func symbol(_ node: FlowNode) -> String {
@@ -1014,8 +1196,12 @@ struct StoryTreeSheet: View {
     }
   }
 
-  private func toggleChoice(_ event: Int) {
-    if openChoices.contains(event) { openChoices.remove(event) } else { openChoices.insert(event) }
+  private func kindLabel(_ node: FlowNode) -> String {
+    switch node.kind {
+    case "choice": return "分支点"
+    case "ending": return "结局"
+    default: return "章节"
+    }
   }
 
   private func ask(_ jump: PendingJump) {
