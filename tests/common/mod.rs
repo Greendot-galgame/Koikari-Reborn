@@ -72,6 +72,9 @@ pub fn archive(
     out
 }
 
+/// Some test crates only call this inside Apple-only cfg modules, so it is
+/// legitimately unused when clippy checks a Linux target.
+#[allow(dead_code)]
 pub fn game(script: &str) -> tempfile::TempDir {
     let directory = tempfile::tempdir().unwrap();
     let data = archive(

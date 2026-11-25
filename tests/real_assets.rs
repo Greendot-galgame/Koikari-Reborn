@@ -425,7 +425,11 @@ fn story_tree_jump_reenters_a_walked_branch_with_real_state() {
         step(&mut engine);
     }
     let (selection, _) = {
-        let id = engine.state.flow.selection_id.expect("reached a choice point");
+        let id = engine
+            .state
+            .flow
+            .selection_id
+            .expect("reached a choice point");
         (id, engine.state.flow.choices.clone())
     };
     let choice = engine.state.flow.choices[0].id;
@@ -440,7 +444,9 @@ fn story_tree_jump_reenters_a_walked_branch_with_real_state() {
     assert_eq!(engine.state.flow.selected.get(&selection), Some(&choice));
     // Jump back to the host event: it must be a normal, non-replay run that
     // re-materializes the same choice list.
-    engine.start_from(FlowTarget::Event(engine.state.flow.event_id.unwrap())).unwrap();
+    engine
+        .start_from(FlowTarget::Event(engine.state.flow.event_id.unwrap()))
+        .unwrap();
     assert!(!engine.state.title && !engine.state.flow.replay);
     // Jump straight back into the walked branch and confirm the join resolves.
     engine

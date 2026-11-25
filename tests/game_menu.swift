@@ -19,7 +19,7 @@ final class GameplayMenuHarness {
   var saving = false
 
   var destinations: [Bool] {
-    [showSaves, showSettings, showCollection, showStoryTree, showDiagnostics, returnToTitle]
+    [showSaves, showSettings, showCollection, showDiagnostics, returnToTitle, showStoryTree]
   }
 }
 
@@ -44,8 +44,6 @@ final class GameplayMenuFakeGame {
   var savedListError: String?
   var collectionResult = true
   var collectionError: String?
-  var flowTreeResult = true
-  var flowTreeError: String?
   var calls: [Call] = []
   var gateWrites: [Bool] = []
   var stoppedFastForward = 0
@@ -88,14 +86,9 @@ final class GameplayMenuFakeGame {
     if let collectionError { error = collectionError }
     return collectionResult
   }
-  // Mirrors production reloadFlowTree: it halts fast-forward/auto-play before
-  // reading the tree, and surfaces a read failure as the blocking root error.
   func reloadFlowTree() -> Bool {
-    stopFastForward()
-    stopAutoPlay()
-    calls.append(Call(name: "storyTree", blocked: modalOpen))
-    if let flowTreeError { error = flowTreeError }
-    return flowTreeResult
+    calls.append(Call(name: "flowTree", blocked: modalOpen))
+    return true
   }
   func count(_ name: String) -> Int { calls.filter { $0.name == name }.count }
 }
@@ -187,6 +180,13 @@ struct GameplayMenuChecks {
         expect(h.showCollection == (action == .gallery || action == .replay), "Library routing")
         expect(h.showDiagnostics == (action == .diagnostics), "Diagnostics routing")
         expect(h.returnToTitle == (action == .returnToTitle), "Title confirmation routing")
+        expect(h.showStoryTree == (action == .storyTree), "Story tree routing")
+        if h.showStoryTree {
+          expect(
+            h.game.calls.contains(GameplayMenuFakeGame.Call(name: "flowTree", blocked: true)),
+            "Flow tree loads while paused")
+          expect(h.game.count("flowTree") == 1, "Flow tree loaded once")
+        }
         if h.showSaves {
           expect(h.saving == (action == .save), "Save and load modes remain distinct")
           expect(
@@ -203,15 +203,20 @@ struct GameplayMenuChecks {
             "Library loads while paused")
         }
       }
-      let before = ["saves", "collection", "voice", "mute", "autoPlay"].map { h.game.count($0) }
+      let before = ["saves", "collection", "voice", "mute", "autoPlay", "flowTree"].map {
+        h.game.count($0)
+      }
       h.finishGameplayMenu()
       expect(
-        before == ["saves", "collection", "voice", "mute", "autoPlay"].map { h.game.count($0) },
+        before
+          == ["saves", "collection", "voice", "mute", "autoPlay", "flowTree"].map {
+            h.game.count($0)
+          },
         "Repeated onDismiss never repeats an action")
       expect(h.game.stoppedFastForward == 1, "Only one running fast-forward session was stopped")
     }
 
-    for blocker in 0..<11 {
+    for blocker in 0..<12 {
       let h = GameplayMenuHarness()
       switch blocker {
       case 0: h.importing = true
@@ -224,6 +229,7 @@ struct GameplayMenuChecks {
       case 7: h.showCollection = true
       case 8: h.game.error = "synthetic error"
       case 9: h.game.importing = true
+      case 10: h.showStoryTree = true
       default: h.game.modalOpen = true
       }
       let before = h.game.calls

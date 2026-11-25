@@ -9,6 +9,7 @@ struct GameTitleScreen: View {
   let resume: () -> Void
   let openSaves: () -> Void
   let openCollection: (Bool) -> Void
+  let openStoryTree: () -> Void
   let openResources: () -> Void
   let openSettings: () -> Void
 
@@ -209,6 +210,11 @@ struct GameTitleScreen: View {
           }
           .accessibilityIdentifier("title-replays")
         }
+        Button(action: openStoryTree) {
+          secondaryLabel("剧情树", symbol: "list.bullet.indent")
+        }
+        .accessibilityIdentifier("title-story-tree")
+        .disabled(!isReady)
       }
       .buttonStyle(.bordered).controlSize(.large)
     }

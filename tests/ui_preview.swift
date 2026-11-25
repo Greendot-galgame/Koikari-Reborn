@@ -280,7 +280,7 @@
         if ready { game.originalUI = artwork }
         let view = GameTitleScreen(
           game: game, startNew: {}, resume: {}, openSaves: {}, openCollection: { _ in },
-          openResources: {}, openSettings: {}
+          openStoryTree: {}, openResources: {}, openSettings: {}
         )
         .dynamicTypeSize(name.hasSuffix("accessibility") ? .accessibility2 : .large)
         try render(view, name: name, width: width, height: height, output: output)
@@ -296,7 +296,7 @@
         try render(
           GameTitleScreen(
             game: game, startNew: {}, resume: {}, openSaves: {}, openCollection: { _ in },
-            openResources: {}, openSettings: {}),
+            openStoryTree: {}, openResources: {}, openSettings: {}),
           name: ready ? "title-ready-notices" : "title-onboarding-error", width: 800,
           height: 466, output: output)
       }
