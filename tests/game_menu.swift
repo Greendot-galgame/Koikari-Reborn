@@ -14,11 +14,12 @@ final class GameplayMenuHarness {
   var showSettings = false
   var newGame = false
   var showCollection = false
+  var showStoryTree = false
   var collectionIsReplay = false
   var saving = false
 
   var destinations: [Bool] {
-    [showSaves, showSettings, showCollection, showDiagnostics, returnToTitle]
+    [showSaves, showSettings, showCollection, showStoryTree, showDiagnostics, returnToTitle]
   }
 }
 
@@ -43,6 +44,8 @@ final class GameplayMenuFakeGame {
   var savedListError: String?
   var collectionResult = true
   var collectionError: String?
+  var flowTreeResult = true
+  var flowTreeError: String?
   var calls: [Call] = []
   var gateWrites: [Bool] = []
   var stoppedFastForward = 0
@@ -85,6 +88,15 @@ final class GameplayMenuFakeGame {
     if let collectionError { error = collectionError }
     return collectionResult
   }
+  // Mirrors production reloadFlowTree: it halts fast-forward/auto-play before
+  // reading the tree, and surfaces a read failure as the blocking root error.
+  func reloadFlowTree() -> Bool {
+    stopFastForward()
+    stopAutoPlay()
+    calls.append(Call(name: "storyTree", blocked: modalOpen))
+    if let flowTreeError { error = flowTreeError }
+    return flowTreeResult
+  }
   func count(_ name: String) -> Int { calls.filter { $0.name == name }.count }
 }
 
@@ -98,8 +110,8 @@ struct GameplayMenuChecks {
       assertions += 1
     }
     let actions = GameplayMenuAction.allCases
-    expect(actions.count == 10, "Every existing gameplay menu action is represented")
-    expect(Set(actions.map(\.rawValue)).count == 10, "Stable action identifiers are unique")
+    expect(actions.count == 11, "Every existing gameplay menu action is represented")
+    expect(Set(actions.map(\.rawValue)).count == 11, "Stable action identifiers are unique")
 
     var idle = GameplayMenuPresentation()
     expect(!idle.isPresented && !idle.blocksGameplay, "Initial phase is closed")

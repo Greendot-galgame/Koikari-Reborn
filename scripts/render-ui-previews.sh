@@ -22,7 +22,7 @@ python3 - "$ROOT/apple/KoikariApp.swift" "$OUTPUT/SaveSlot.swift" <<'PY'
 import pathlib
 import sys
 source = pathlib.Path(sys.argv[1]).read_text()
-collection = source[source.index('struct CollectionEntry:'):source.index('struct Dialogue:')]
+collection = source[source.index('struct StoryChoice:'):source.index('struct Dialogue:')]
 start = source.index('struct PastPage:')
 stop = source.index('// BEGIN MEDIA LIFECYCLE POLICY', start)
 pathlib.Path(sys.argv[2]).write_text('import Foundation\n' + collection + source[start:stop])
@@ -32,7 +32,8 @@ xcrun --sdk macosx swiftc -swift-version 6 -strict-concurrency=complete -warning
   -sdk "$(xcrun --sdk macosx --show-sdk-path)" \
   "$OUTPUT/SaveSlot.swift" "$ROOT/apple/ReadingPolicy.swift" "$ROOT/apple/GameUI.swift" \
   "$ROOT/apple/OriginalUI.swift" "$ROOT/apple/GalleryThumbnails.swift" "$ROOT/apple/GameMenus.swift" \
-  "$ROOT/apple/TitleScreen.swift" "$ROOT/apple/SettingsView.swift" "$ROOT/tests/ui_preview.swift" \
+  "$ROOT/apple/SaveBackup.swift" "$ROOT/apple/TitleScreen.swift" "$ROOT/apple/SettingsView.swift" \
+  "$ROOT/tests/ui_preview.swift" \
   -o "$OUTPUT/render-ui"
 if [[ -n "$ARTWORK" ]]; then
   "$OUTPUT/render-ui" "$OUTPUT" "$ARTWORK"

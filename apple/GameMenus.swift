@@ -4,7 +4,10 @@ private struct LibrarySurface: ViewModifier {
   var width: CGFloat = 680
   func body(content: Self.Content) -> some View {
     content
-      .frame(minWidth: 300, idealWidth: width, minHeight: 280, idealHeight: 620)
+      .frame(
+        minWidth: 300, idealWidth: width, maxWidth: .infinity,
+        minHeight: 280, idealHeight: 620, maxHeight: .infinity
+      )
       .background(GameTheme.background).foregroundStyle(GameTheme.text)
       .tint(GameTheme.accent).preferredColorScheme(.light)
   }
@@ -188,7 +191,9 @@ struct CollectionMenu: View {
       .fullScreenCover(isPresented: $showsLarge) { largePreview }
     #else
       .sheet(isPresented: $showsLarge) {
-        largePreview.frame(minWidth: 880, idealWidth: 1180, minHeight: 560, idealHeight: 760)
+        largePreview.frame(
+          minWidth: 880, idealWidth: 1180, maxWidth: .infinity,
+          minHeight: 560, idealHeight: 760, maxHeight: .infinity)
       }
     #endif
     .confirmationDialog(
@@ -245,10 +250,16 @@ struct CGViewer: View {
         GeometryReader { proxy in
           image.resizable().scaledToFit()
             .frame(width: proxy.size.width, height: proxy.size.height)
-            .scaleEffect(scale)
+            // Apply zoom around the fitted image centre, then pan: the base
+            // frame is already centred in the window, so the fitted image is
+            // centred by default instead of hugging a corner.
+            .scaleEffect(scale, anchor: .center)
             .offset(offset)
             .contentShape(Rectangle())
-            .gesture(
+            // Zoom and pan run simultaneously: a pinch already moves the finger
+            // centroid, and a pan starting mid-pinch must not restart or drop
+            // the accumulated magnification — that restart read as stutter.
+            .simultaneousGesture(
               MagnificationGesture()
                 .onChanged { value in
                   scale = min(4, max(1, settledScale * value))
@@ -271,7 +282,13 @@ struct CGViewer: View {
                     width: settledOffset.width + value.translation.width,
                     height: settledOffset.height + value.translation.height)
                 }
-                .onEnded { _ in settledOffset = offset }
+                .onEnded { _ in
+                  settledOffset = offset
+                  if scale <= 1.001 {
+                    offset = .zero
+                    settledOffset = .zero
+                  }
+                }
             )
             .onTapGesture(count: 2) { resetZoom() }
         }
@@ -511,6 +528,9 @@ struct SaveManager: View {
   @State private var selectedPage = 0
   private var automatic: [SaveSlot] { game.slots.filter { $0.slot == 9 } }
   private var manual: [SaveSlot] { game.slots.filter { $0.slot != 9 }.sorted { $0.slot < $1.slot } }
+  /// Route the story is currently inside: nil on the common route, so the
+  /// current save page is 0; heroine routes carry their own index.
+  private var currentRoute: Int { max(0, game.snapshot?.flow?.route ?? 0) }
   private var canSave: Bool {
     !(game.snapshot?.title ?? true) && game.snapshot?.blocked == nil
       && game.snapshot?.flow?.replay != true
@@ -532,11 +552,15 @@ struct SaveManager: View {
       .modifier(LibrarySurface(width: 720))
       .onAppear {
         game.beginSavePreviews()
-        // When saving, open on the page that matches the route being played so
-        // a heroine-route save lands on its own page by default.
-        if saving { selectedPage = max(0, game.snapshot?.flow?.route ?? 0) }
+        // When saving, the selection is pinned to the route being played: a
+        // save may only be written onto its own route page, never scattered
+        // onto another line's page.
+        if saving { selectedPage = currentRoute }
       }
       .onDisappear { game.endSavePreviews() }
+      .onChange(of: currentRoute) { route in
+        if saving { selectedPage = route }
+      }
       .onChange(of: phase) { if $0 == .active { game.reloadSaves() } }
       .confirmationDialog(
         saving ? "覆盖 \(pending?.name ?? "存档")？" : "读取 \(pending?.name ?? "存档")，将替换当前进度？",
@@ -647,13 +671,7 @@ struct SaveManager: View {
               VStack(alignment: .leading, spacing: 10) {
                 Text("手动存档").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
                 if pageCount > 1 {
-                  Picker("路线", selection: $selectedPage) {
-                    ForEach(0..<pageCount, id: \.self) { index in
-                      Text(game.routeTitle(index)).tag(index)
-                    }
-                  }
-                  .pickerStyle(.segmented)
-                  .accessibilityIdentifier("save-page-picker")
+                  pagePicker
                 }
                 if pagedManual.isEmpty {
                   Text("这一页还没有存档。").font(.callout).foregroundStyle(.secondary)
@@ -670,6 +688,28 @@ struct SaveManager: View {
             }
           }.padding(20)
         }
+      }
+    }
+  }
+
+  /// Route-page segmented control. While saving, the selection is pinned to
+  /// the route being played: switching pages snaps back, because a new save
+  /// may only ever land on its own line's page.
+  private var pagePicker: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      Picker("路线", selection: $selectedPage) {
+        ForEach(0..<pageCount, id: \.self) { index in
+          Text(game.routeTitle(index)).tag(index)
+        }
+      }
+      .pickerStyle(.segmented)
+      .accessibilityIdentifier("save-page-picker")
+      .onChange(of: selectedPage) { page in
+        if saving, page != currentRoute { selectedPage = currentRoute }
+      }
+      if saving {
+        Text("当前正在\(game.routeTitle(currentRoute))，新存档只能保存在这一页。")
+          .font(.caption).foregroundStyle(.secondary)
       }
     }
   }
@@ -735,15 +775,21 @@ struct SaveManager: View {
         }
         Spacer()
         if saving && slot.slot != 9 {
-          Button("保存") {
-            if slot.exists {
-              pending = slot
-              confirm = true
-            } else {
-              game.action("save:\(slot.slot)")
-            }
-          }.disabled(!canSave).accessibilityLabel("保存至\(slot.name)").accessibilityIdentifier(
-            "save-slot-\(slot.slot)")
+          // A manual slot belongs to the route recorded inside its save; new
+          // saves may only be written onto the page of the route currently
+          // being played. Slots parked on another line stay readable but offer
+          // no save button, so progress can never land on the wrong page.
+          if slot.page == currentRoute {
+            Button("保存") {
+              if slot.exists {
+                pending = slot
+                confirm = true
+              } else {
+                game.action("save:\(slot.slot)")
+              }
+            }.disabled(!canSave).accessibilityLabel("保存至\(slot.name)").accessibilityIdentifier(
+              "save-slot-\(slot.slot)")
+          }
         } else if !saving {
           Button("读取") {
             pending = slot
@@ -920,8 +966,9 @@ struct StoryTreeSheet: View {
             Button {
               toggleChoice(node.event)
             } label: {
-              Image(systemName: openChoices.contains(node.event)
-                    ? "chevron.up" : "chevron.down")
+              Image(
+                systemName: openChoices.contains(node.event)
+                  ? "chevron.up" : "chevron.down")
             }
             .buttonStyle(.borderless).accessibilityLabel("展开分支")
           }
@@ -977,8 +1024,7 @@ struct StoryTreeSheet: View {
   }
 
   private func toggleChoice(_ event: Int) {
-    if openChoices.contains(event) { openChoices.remove(event) }
-    else { openChoices.insert(event) }
+    if openChoices.contains(event) { openChoices.remove(event) } else { openChoices.insert(event) }
   }
 
   private func ask(_ jump: PendingJump) {

@@ -11,12 +11,17 @@
     var history: [String] = []
     var blocked: String?
     var warnings: [String] = []
+    /// Mirrors the production snapshot shape used by the save manager: nil
+    /// means the common route, an index selects a heroine route page.
+    var flow: StoryFlow? = StoryFlow()
   }
 
   @MainActor final class Game: ObservableObject {
     @Published var handle: Int?
     @Published var hasSave: Bool
     @Published var slots: [SaveSlot] = []
+    @Published var routeNames: [String?] = []
+    @Published var flowTree: FlowTree?
     @Published var savePreviewGeneration = UUID()
     private let saveThumbnails = GameGalleryThumbnails()
     var saveThumbnailUnavailable = false
@@ -32,6 +37,8 @@
     @Published var originalUI = OriginalUIArtwork()
     @Published var importing = false
     @Published var modalOpen = false
+    let savesDirectory = URL(fileURLWithPath: "/tmp/koikari-ui-preview-saves")
+    func inform(_ text: String) { notice = text }
     @Published var resourceStatus: String
     @Published var textScale = 1.0
     @Published var dialogueScale = 1.0
@@ -39,6 +46,7 @@
     @Published var dialogueLineSpacing = 5.0
     @Published var showPageNumber = false
     @Published var fastForwardSpeed = 1.0
+    @Published var autoPlayDelay = 2.5
     @Published var bgmVolume = 0.35
     @Published var voiceVolume = 1.0
     @Published var seVolume = 0.7
@@ -62,6 +70,10 @@
     }
     func toggleMute() { muted.toggle() }
     @discardableResult func action(_ command: String) -> Bool { false }
+    // The story-tree sheet calls these after confirmation; the fixture never
+    // runs an engine, so they only need to exist with the same signatures.
+    func jumpToEvent(_ event: Int) {}
+    func jumpToChoice(selection: Int, choice: Int) {}
     func hideCG() {}
     func showCG(_ entry: CollectionEntry) -> Bool { false }
     func clearGalleryThumbnails() {
@@ -91,6 +103,13 @@
       savePreviewGeneration = UUID()
     }
     func reloadSaves() { clearSaveThumbnails() }
+    /// Display title for a save page index, mirroring the production helper:
+    /// 0 is the common route, anything else falls back to a positional label.
+    func routeTitle(_ index: Int) -> String {
+      guard index > 0 else { return "共通线" }
+      return routeNames.indices.contains(index)
+        ? (routeNames[index] ?? "路线 \(index)") : "路线 \(index)"
+    }
     func saveThumbnail(_ slot: SaveSlot) async -> Image? {
       guard slot.exists, slot.compatible, let revision = slot.previewRevision,
         !saveThumbnailUnavailable
@@ -154,7 +173,16 @@
         SaveSlot(
           slot: 6, exists: false, compatible: false, savedAt: 0, pages: 0,
           speaker: "", text: "", error: nil),
+        // A heroine-route manual save: it must appear only on its own route
+        // page, and while the story sits on the common route it offers no
+        // save button — saving is pinned to the route being played.
+        SaveSlot(
+          slot: 7, exists: true, compatible: true, savedAt: 1_789_950_000_000,
+          pages: 210, speaker: "示例角色", text: "个人线里的存档，只在自己的分页接受覆盖。",
+          route: 1, routeName: "示例路线", error: nil,
+          previewRevision: String(repeating: "d", count: 64)),
       ]
+      routeNames = [nil, "示例路线"]
       gallery = (1...8).map { number in
         CollectionEntry(
           id: "synthetic-cg-\(number)",
