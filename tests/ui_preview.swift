@@ -317,6 +317,18 @@
         try render(
           Backlog(game: library), name: "backlog-\(suffix)", width: width, height: height,
           output: output)
+        // A history longer than the panel: opening it must show the newest
+        // page, not the oldest one with empty space below.
+        let longHistory = Game(ready: true, saved: true)
+        longHistory.populateLibrary()
+        longHistory.timeline = (1...14).map { index in
+          PastPage(
+            page: UInt64(200 + index), speaker: "示例角色",
+            text: "第 \(index) 条回看记录：用来检查长列表打开时停在哪里。", interlude: false)
+        }
+        try render(
+          Backlog(game: longHistory), name: "backlog-long-\(suffix)", width: width, height: height,
+          output: output)
         let galleryWidth = suffix == "mac" ? 840.0 : width
         try render(
           CollectionMenu(game: library, replay: false), name: "gallery-\(suffix)",

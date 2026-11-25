@@ -6,12 +6,12 @@ private struct LibrarySurface: ViewModifier {
     content
       #if os(macOS)
         // macOS sheets size to the content's fitting size. A flexible frame
-        // with only a small minimum collapsed to a ~470pt panel, so keep a
-        // generous minimum here: the sheet cannot open narrower than the
-        // intended width, and can still grow when the window offers more room.
-        .frame(
-          minWidth: width, idealWidth: width, maxWidth: .infinity,
-          minHeight: 620, idealHeight: 620, maxHeight: .infinity)
+        // with only a small minimum collapsed to a ~470pt panel, so pin the
+        // intended library size: the content is then laid out for exactly the
+        // panel it is drawn in. An unbounded height laid the lists out for a
+        // taller area than the sheet clips, so their last row sat below the
+        // visible edge and the panel looked like it started from the corner.
+        .frame(width: width, height: 620)
       #else
         .frame(minWidth: 300, idealWidth: width, minHeight: 280, idealHeight: 620)
       #endif
@@ -426,6 +426,20 @@ private struct CollectionTile: View {
   }
 }
 
+/// Opens the history on the newest page. macOS 14 / iOS 17 can anchor the
+/// scroll view itself, which works on the first layout pass; older releases
+/// keep the best-effort scroll issued from onAppear below.
+private struct BacklogScrollAnchor: ViewModifier {
+  let anchoredToBottom: Bool
+  @ViewBuilder func body(content: Self.Content) -> some View {
+    if #available(iOS 17.0, macOS 14.0, *) {
+      content.defaultScrollAnchor(anchoredToBottom ? .bottom : .top)
+    } else {
+      content
+    }
+  }
+}
+
 struct Backlog: View {
   @ObservedObject var game: Game
   @Environment(\.dismiss) private var dismiss
@@ -462,7 +476,11 @@ struct Backlog: View {
       } else {
         ScrollViewReader { proxy in
           ScrollView {
-            LazyVStack(spacing: 12) {
+            // A plain stack, not a lazy one: the timeline is capped at the 100
+            // stored pages, and a lazy stack has no rows laid out when onAppear
+            // fires, so scrolling to the newest page landed on a guessed offset
+            // and left the panel blank until the user dragged it.
+            VStack(spacing: 12) {
               ForEach(game.timeline) { page in
                 Button {
                   selected = page
@@ -492,9 +510,24 @@ struct Backlog: View {
                   .accessibilityIdentifier("rewind-\(page.page)")
                   .accessibilityHint("回溯到这一页；操作前会再次确认")
               }
-            }.padding(.horizontal, 20).padding(.bottom, 20)
-          }.onAppear {
-            if let last = game.timeline.last { proxy.scrollTo(last.page, anchor: .bottom) }
+            }
+            // Extra bottom room: the sheet clips slightly more than it lays
+            // out, so without it the newest row ended up half hidden under the
+            // panel's bottom edge even with the list scrolled all the way down.
+            .padding(.horizontal, 20).padding(.bottom, 52)
+          }
+          .modifier(BacklogScrollAnchor(anchoredToBottom: game.timeline.count > 3))
+          .background {
+            // A sheet settles on its final size only after the first layout
+            // pass, and a jump issued before that is dropped — which is why the
+            // panel kept opening on the oldest page. Watch the viewport instead
+            // and scroll once it has a real height.
+            GeometryReader { viewport in
+              Color.clear.onChange(of: viewport.size) { size in
+                guard size.height > 1, let last = game.timeline.last else { return }
+                proxy.scrollTo(last.page, anchor: .bottom)
+              }
+            }
           }
         }
       }
@@ -826,6 +859,19 @@ struct SaveManager: View {
   }
 }
 
+/// Opens a scrollable canvas horizontally centred and at its top, so the story
+/// tree is in view the moment the panel appears instead of leaving the viewport
+/// parked on an empty corner of a wide canvas.
+private struct CenteredCanvasAnchor: ViewModifier {
+  @ViewBuilder func body(content: Self.Content) -> some View {
+    if #available(iOS 17.0, macOS 14.0, *) {
+      content.defaultScrollAnchor(UnitPoint(x: 0.5, y: 0))
+    } else {
+      content
+    }
+  }
+}
+
 private struct SaveSlotThumbnail: View {
   @ObservedObject var game: Game
   let slot: SaveSlot
@@ -981,6 +1027,7 @@ struct StoryTreeSheet: View {
                 .updating($pinch) { value, state, _ in state = value }
                 .onEnded { zoom = min(2.5, max(0.4, zoom * $0)) })
           }
+          .modifier(CenteredCanvasAnchor())
           .background(GameTheme.background.opacity(0.4))
           zoomBar.padding(12)
         }
@@ -1029,6 +1076,9 @@ struct StoryTreeSheet: View {
       while let (event, depth, resolved) = stack.popLast() {
         if resolved {
           let kids = children(of: event).compactMap { slotOf[$0] }
+          // Centre a parent over its subtree: that is what makes the canvas
+          // read as a tree.  Opening on empty space is handled by centring the
+          // scroll view on the canvas instead of flattening the layout.
           let slot = kids.isEmpty ? nextSlot : (kids.first! + kids.last!) / 2
           if kids.isEmpty { nextSlot += 1 }
           slotOf[event] = slot
@@ -1049,7 +1099,6 @@ struct StoryTreeSheet: View {
 
     let roots = tree.roots.isEmpty ? tree.nodes.map { $0.event } : tree.roots
     for root in roots {
-      let firstColumn = nextSlot
       assign(root)
       if let point = plan.positions[root], let node = byEvent[root] {
         let name =
@@ -1057,11 +1106,11 @@ struct StoryTreeSheet: View {
           ? "共通线"
           : (tree.routes.indices.contains(node.route)
             ? tree.routes[node.route] : "路线 \(node.route)")
+        // Sit the route label over the first chapter it introduces, so it stays
+        // in view now that the canvas opens horizontally centred instead of on
+        // the column the subtree happens to start in.
         plan.headers.append(
-          TreePlan.Header(
-            name: name,
-            at: CGPoint(x: canvasInset + CGFloat(firstColumn) * columnWidth + 60, y: 20)))
-        _ = point
+          TreePlan.Header(name: name, at: CGPoint(x: point.x, y: 20)))
       }
     }
     for node in tree.nodes where plan.positions[node.event] == nil {
